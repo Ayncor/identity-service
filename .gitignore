@@ -1,0 +1,36 @@
+## Dependencies
+node_modules/
+
+## Build output
+dist/
+build/
+.nestjs/
+*.tsbuildinfo
+
+## Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+## Tests / coverage
+coverage/
+
+## Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+## Runtime data
+tmp/
+temp/
+
+## IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
