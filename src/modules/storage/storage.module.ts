@@ -1,10 +1,10 @@
 import { Module } from "@nestjs/common";
 
-import { InMemoryStore } from "./storage.store";
+import { PrismaService } from "./prisma.service";
 
 @Module({
-  providers: [InMemoryStore],
-  exports: [InMemoryStore]
+  providers: [PrismaService],
+  exports: [PrismaService]
 })
 export class StorageModule {}
 

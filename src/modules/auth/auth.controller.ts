@@ -42,13 +42,13 @@ export class AuthController {
     return {
       id: u.id,
       email: u.email,
-      display_name: u.display_name,
-      avatar_url: u.avatar_url ?? null,
+      display_name: u.displayName ?? u.display_name,
+      avatar_url: (u.avatarUrl ?? u.avatar_url) ?? null,
       status: u.status,
-      email_verified_at: u.email_verified_at ?? null,
-      created_at: u.created_at,
-      updated_at: u.updated_at,
-      deleted_at: u.deleted_at ?? null
+      email_verified_at: u.emailVerifiedAt ? u.emailVerifiedAt.toISOString() : u.email_verified_at ?? null,
+      created_at: u.createdAt ? u.createdAt.toISOString() : u.created_at,
+      updated_at: u.updatedAt ? u.updatedAt.toISOString() : u.updated_at,
+      deleted_at: u.deletedAt ? u.deletedAt.toISOString() : u.deleted_at ?? null
     };
   }
 
@@ -58,23 +58,23 @@ export class AuthController {
       name: o.name,
       slug: o.slug,
       status: o.status,
-      created_at: o.created_at,
-      updated_at: o.updated_at,
-      deleted_at: o.deleted_at ?? null
+      created_at: o.createdAt ? o.createdAt.toISOString() : o.created_at,
+      updated_at: o.updatedAt ? o.updatedAt.toISOString() : o.updated_at,
+      deleted_at: o.deletedAt ? o.deletedAt.toISOString() : o.deleted_at ?? null
     };
   }
 
   private toMembership(m: any) {
     return {
       id: m.id,
-      org_id: m.org_id,
-      user_id: m.user_id,
-      role_id: m.role_id ?? null,
+      org_id: m.orgId ?? m.org_id,
+      user_id: m.userId ?? m.user_id,
+      role_id: (m.roleId ?? m.role_id) ?? null,
       status: m.status,
-      joined_at: m.joined_at ?? null,
-      invited_by_user_id: m.invited_by_user_id ?? null,
-      created_at: m.created_at,
-      updated_at: m.updated_at
+      joined_at: m.joinedAt ? m.joinedAt.toISOString() : m.joined_at ?? null,
+      invited_by_user_id: (m.invitedByUserId ?? m.invited_by_user_id) ?? null,
+      created_at: m.createdAt ? m.createdAt.toISOString() : m.created_at,
+      updated_at: m.updatedAt ? m.updatedAt.toISOString() : m.updated_at
     };
   }
 }

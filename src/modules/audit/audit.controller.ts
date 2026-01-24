@@ -17,7 +17,7 @@ export class AuditController {
     @Query("action") action?: string
   ) {
     const p = req.principal!;
-    const result = this.audit.listOrgAudit(
+    const result = await this.audit.listOrgAudit(
       orgId,
       p.org_id,
       pageSize ? Number(pageSize) : 50,
@@ -28,13 +28,13 @@ export class AuditController {
     return {
       items: result.items.map((e) => ({
         id: e.id,
-        org_id: e.org_id,
-        actor_user_id: e.actor_user_id ?? null,
+        org_id: (e as any).org_id ?? e.orgId,
+        actor_user_id: (e as any).actor_user_id ?? e.actorUserId ?? null,
         action: e.action,
-        target_type: e.target_type,
-        target_id: e.target_id ?? null,
-        metadata_json: e.metadata_json,
-        created_at: e.created_at
+        target_type: (e as any).target_type ?? e.targetType,
+        target_id: (e as any).target_id ?? e.targetId ?? null,
+        metadata_json: (e as any).metadata_json ?? e.metadata,
+        created_at: (e as any).created_at ?? (e.createdAt instanceof Date ? e.createdAt.toISOString() : e.createdAt)
       })),
       next_cursor: result.next_cursor
     };

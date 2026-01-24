@@ -1,22 +1,33 @@
 import { ForbiddenException, Injectable } from "@nestjs/common";
 
-import { InMemoryStore } from "../storage/storage.store";
+import { PrismaService } from "../storage/prisma.service";
 
 @Injectable()
 export class AuditService {
-  constructor(private readonly store: InMemoryStore) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  listOrgAudit(orgId: string, actorOrgId: string, pageSize: number, cursor?: string | null, action?: string) {
+  async listOrgAudit(orgId: string, actorOrgId: string, pageSize: number, cursor?: string | null, action?: string) {
     if (orgId !== actorOrgId) throw new ForbiddenException("Forbidden");
 
-    const all = this.store.auditLogsByOrg.get(orgId) ?? [];
-    const filtered = action ? all.filter((e) => e.action === action || e.action.startsWith(action)) : all;
-
-    // Simple cursor: base10 index into list
+    // Simple cursor: base10 offset into a stable ordering.
     const start = cursor ? Math.max(0, Number(cursor)) : 0;
     const size = Math.min(Math.max(1, pageSize), 200);
-    const items = filtered.slice(start, start + size);
-    const next = start + size < filtered.length ? String(start + size) : null;
+    const where: any = {
+      orgId,
+      ...(action ? { action: { startsWith: action } } : {})
+    };
+
+    const [total, items] = await Promise.all([
+      this.prisma.auditLog.count({ where }),
+      this.prisma.auditLog.findMany({
+        where,
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        skip: start,
+        take: size
+      })
+    ]);
+
+    const next = start + items.length < total ? String(start + items.length) : null;
 
     return { items, next_cursor: next };
   }
