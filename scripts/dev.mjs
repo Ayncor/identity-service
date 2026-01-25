@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import chokidar from "chokidar";
 
@@ -32,6 +33,9 @@ async function restartServer() {
     // small debounce to wait for dist writes to finish
     await sleep(150);
     await runFixImports();
+
+    // If this is a fresh repo / dist was cleaned, wait until the first build produces entry.js.
+    if (!fs.existsSync(path.resolve("dist/entry.js"))) return;
 
     if (serverProc) {
       serverProc.kill();
@@ -75,6 +79,7 @@ watcher.on("change", restartServer);
 watcher.on("unlink", restartServer);
 
 // Start once if dist/main.js exists already (e.g., after a prior build)
-const distMain = path.resolve("dist/entry.js");
-await restartServer();
+if (fs.existsSync(path.resolve("dist/entry.js"))) {
+  await restartServer();
+}
 

@@ -43,6 +43,27 @@ export class AuthService implements OnModuleInit {
     return createHash("sha256").update(token, "utf8").digest("hex");
   }
 
+  private async revokeAllRefreshTokensForUserOrg(userId: string, orgId: string, reason: string) {
+    const revokedAt = new Date();
+    const res = await this.prisma.refreshToken.updateMany({
+      where: { userId, orgId, revokedAt: null },
+      data: { revokedAt }
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        orgId,
+        actorUserId: userId,
+        action: "identity.auth.tokens.revoked_all",
+        targetType: "user",
+        targetId: userId,
+        metadata: { reason, count: res.count }
+      }
+    });
+
+    return res.count;
+  }
+
   private async bootstrapDevIdentity() {
     const email = (this.cfg.get<string>("BOOTSTRAP_EMAIL") ?? "").trim().toLowerCase();
     const password = this.cfg.get<string>("BOOTSTRAP_PASSWORD") ?? "";
@@ -154,27 +175,72 @@ export class AuthService implements OnModuleInit {
   }
 
   async refresh(refreshToken: string) {
-    const existing = await this.prisma.refreshToken.findUnique({
-      where: { tokenHash: this.tokenHash(refreshToken) }
-    });
-    if (!existing || existing.revokedAt) throw new UnauthorizedException("Invalid refresh token");
-    if (existing.expiresAt < new Date()) throw new UnauthorizedException("Invalid refresh token");
+    const tokenHash = this.tokenHash(refreshToken);
+    const now = new Date();
 
-    const newRefresh = randomUUID();
+    const existing = await this.prisma.refreshToken.findUnique({ where: { tokenHash } });
+    if (!existing) throw new UnauthorizedException("Invalid refresh token");
+    if (existing.expiresAt < now) throw new UnauthorizedException("Invalid refresh token");
+
+    // Reuse detection: token was already rotated (revoked + replacedById), but is being presented again.
+    if (existing.revokedAt && existing.replacedById) {
+      await this.prisma.auditLog.create({
+        data: {
+          orgId: existing.orgId,
+          actorUserId: existing.userId,
+          action: "identity.auth.refresh.reuse_detected",
+          targetType: "refresh_token",
+          targetId: existing.id,
+          metadata: { replaced_by_id: existing.replacedById }
+        }
+      });
+
+      // Fail closed: revoke all refresh tokens for this user within this org.
+      await this.revokeAllRefreshTokensForUserOrg(existing.userId, existing.orgId, "refresh_reuse_detected");
+      throw new UnauthorizedException("Invalid refresh token");
+    }
+    if (existing.revokedAt) throw new UnauthorizedException("Invalid refresh token");
+
     const ttlMs = Number(this.cfg.get<string>("JWT_REFRESH_TTL_MS") ?? `${30 * 24 * 60 * 60 * 1000}`);
-    const created = await this.prisma.refreshToken.create({
-      data: {
-        tokenHash: this.tokenHash(newRefresh),
-        userId: existing.userId,
-        orgId: existing.orgId,
-        membershipId: existing.membershipId,
-        expiresAt: new Date(Date.now() + ttlMs)
-      }
-    });
+    const newRefresh = randomUUID();
+    const newId = randomUUID();
 
-    await this.prisma.refreshToken.update({
-      where: { id: existing.id },
-      data: { revokedAt: new Date(), replacedById: created.id }
+    // Rotation must be single-use. Do it transactionally to avoid double-refresh races.
+    await this.prisma.$transaction(async (tx) => {
+      const updateRes = await tx.refreshToken.updateMany({
+        where: { id: existing.id, revokedAt: null },
+        data: { revokedAt: now, replacedById: newId }
+      });
+      if (updateRes.count !== 1) {
+        // Another refresh won the race; treat as reuse and fail closed.
+        await tx.auditLog.create({
+          data: {
+            orgId: existing.orgId,
+            actorUserId: existing.userId,
+            action: "identity.auth.refresh.reuse_detected",
+            targetType: "refresh_token",
+            targetId: existing.id,
+            metadata: { reason: "concurrent_refresh" }
+          }
+        });
+
+        await tx.refreshToken.updateMany({
+          where: { userId: existing.userId, orgId: existing.orgId, revokedAt: null },
+          data: { revokedAt: now }
+        });
+        throw new UnauthorizedException("Invalid refresh token");
+      }
+
+      await tx.refreshToken.create({
+        data: {
+          id: newId,
+          tokenHash: this.tokenHash(newRefresh),
+          userId: existing.userId,
+          orgId: existing.orgId,
+          membershipId: existing.membershipId,
+          expiresAt: new Date(Date.now() + ttlMs)
+        }
+      });
     });
 
     const [user, org, membership] = await Promise.all([
@@ -223,6 +289,20 @@ export class AuthService implements OnModuleInit {
         action: "identity.auth.logout",
         targetType: "user",
         targetId: existing.userId,
+        metadata: {}
+      }
+    });
+  }
+
+  async logoutAll(userId: string, orgId: string) {
+    await this.revokeAllRefreshTokensForUserOrg(userId, orgId, "user_requested_logout_all");
+    await this.prisma.auditLog.create({
+      data: {
+        orgId,
+        actorUserId: userId,
+        action: "identity.auth.logout_all",
+        targetType: "user",
+        targetId: userId,
         metadata: {}
       }
     });
