@@ -8,7 +8,8 @@ import {
   CreateOrgRequestDto,
   DeclineInviteRequestDto,
   RevokeInviteRequestDto,
-  UpdateMemberRequestDto
+  UpdateMemberRequestDto,
+  VerifyInviteRequestDto
 } from "./orgs.dto";
 import { OrgsService } from "./orgs.service";
 
@@ -62,8 +63,7 @@ export class OrgsController {
   @UseGuards(JwtAuthGuard)
   async createInvite(@Req() req: RequestWithPrincipal, @Param("orgId") orgId: string, @Body() body: CreateInviteRequestDto) {
     const p = req.principal!;
-    // Cast avoids occasional TS language-service stale typing in this repo.
-    const created = await (this.orgs as any).createInvite(orgId, p.user_id, p.membership_id, body.email, body.role_id ?? null);
+    const created = await this.orgs.createInvite(orgId, p.user_id, p.membership_id, body.email, body.role_id ?? null);
     return {
       invite: this.toInvite(created.invite),
       // token is only returned once (caller must deliver it out-of-band for now)
@@ -75,30 +75,39 @@ export class OrgsController {
   @UseGuards(JwtAuthGuard)
   async listInvites(@Req() req: RequestWithPrincipal, @Param("orgId") orgId: string) {
     const p = req.principal!;
-    const invites = await (this.orgs as any).listInvites(orgId, p.membership_id);
-    return { items: (invites as any[]).map((i: any) => this.toInvite(i)) };
+    const invites = await this.orgs.listInvites(orgId, p.membership_id);
+    return { items: invites.map((i) => this.toInvite(i)) };
   }
 
   @Post("orgs/:orgId/invites/revoke")
   @UseGuards(JwtAuthGuard)
   async revokeInvite(@Req() req: RequestWithPrincipal, @Param("orgId") orgId: string, @Body() body: RevokeInviteRequestDto) {
     const p = req.principal!;
-    await (this.orgs as any).revokeInvite(orgId, p.user_id, p.membership_id, body.invite_id);
+    await this.orgs.revokeInvite(orgId, p.user_id, p.membership_id, body.invite_id);
+  }
+
+  // Public: validates invite token and returns safe details (no tokenHash leakage).
+  @Post("orgs/:orgId/invites/verify")
+  async verifyInvite(@Param("orgId") orgId: string, @Body() body: VerifyInviteRequestDto) {
+    const details = await this.orgs.verifyInvite(orgId, body.token);
+    return details;
   }
 
   @Post("orgs/:orgId/invites/accept")
-  @UseGuards(JwtAuthGuard)
-  async acceptInvite(@Req() req: RequestWithPrincipal, @Param("orgId") orgId: string, @Body() body: AcceptInviteRequestDto) {
-    const p = req.principal!;
-    const membership = await (this.orgs as any).acceptInvite(orgId, p.user_id, body.token);
-    return this.toMembership(membership);
+  async acceptInvite(@Param("orgId") orgId: string, @Body() body: AcceptInviteRequestDto) {
+    const session = await this.orgs.acceptInvitePublic(orgId, body.token, body.password, body.display_name);
+    return {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      user: session.user,
+      membership: this.toMembership(session.membership),
+      org: session.org
+    };
   }
 
   @Post("orgs/:orgId/invites/decline")
-  @UseGuards(JwtAuthGuard)
-  async declineInvite(@Req() req: RequestWithPrincipal, @Param("orgId") orgId: string, @Body() body: DeclineInviteRequestDto) {
-    const p = req.principal!;
-    await (this.orgs as any).declineInvite(orgId, p.user_id, body.token);
+  async declineInvite(@Param("orgId") orgId: string, @Body() body: DeclineInviteRequestDto) {
+    await this.orgs.declineInvitePublic(orgId, body.token);
   }
 
   private toOrg(o: any) {

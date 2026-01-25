@@ -141,10 +141,20 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException("Invalid credentials");
     }
 
+    const session = await this.issueSessionForMembership(user.id, org.id, membership.id, "identity.auth.login");
+    return { ...session, user, org, membership };
+  }
+
+  async issueSessionForMembership(userId: string, orgId: string, membershipId: string, auditAction?: string) {
+    const membership = await this.prisma.membership.findUnique({ where: { id: membershipId } });
+    if (!membership || membership.userId !== userId || membership.orgId !== orgId) {
+      throw new UnauthorizedException("Invalid session");
+    }
+
     const accessToken = this.jwt.sign({
-      sub: user.id,
-      org_id: org.id,
-      membership_id: membership.id,
+      sub: userId,
+      org_id: orgId,
+      membership_id: membershipId,
       role_id: membership.roleId ?? null
     });
 
@@ -153,25 +163,27 @@ export class AuthService implements OnModuleInit {
     await this.prisma.refreshToken.create({
       data: {
         tokenHash: this.tokenHash(refreshToken),
-        userId: user.id,
-        orgId: org.id,
-        membershipId: membership.id,
+        userId,
+        orgId,
+        membershipId,
         expiresAt: new Date(Date.now() + ttlMs)
       }
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        orgId: org.id,
-        actorUserId: user.id,
-        action: "identity.auth.login",
-        targetType: "user",
-        targetId: user.id,
-        metadata: {}
-      }
-    });
+    if (auditAction) {
+      await this.prisma.auditLog.create({
+        data: {
+          orgId,
+          actorUserId: userId,
+          action: auditAction,
+          targetType: "user",
+          targetId: userId,
+          metadata: {}
+        }
+      });
+    }
 
-    return { access_token: accessToken, refresh_token: refreshToken, user, org, membership };
+    return { access_token: accessToken, refresh_token: refreshToken };
   }
 
   async refresh(refreshToken: string) {

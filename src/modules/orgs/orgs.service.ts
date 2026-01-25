@@ -1,5 +1,5 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
-import { createHash, randomBytes, randomUUID, scryptSync } from "crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "crypto";
 
 import { PrismaService } from "../storage/prisma.service";
 import { AuthService } from "../auth/auth.service";
@@ -11,6 +11,13 @@ function nowIso(): string {
 
 function hashPassword(password: string, salt: string): string {
   return scryptSync(password, salt, 64).toString("hex");
+}
+
+function verifyPassword(password: string, salt: string, expectedHashHex: string): boolean {
+  const actual = Buffer.from(hashPassword(password, salt), "hex");
+  const expected = Buffer.from(expectedHashHex, "hex");
+  if (actual.length !== expected.length) return false;
+  return timingSafeEqual(actual, expected);
 }
 
 @Injectable()
@@ -75,6 +82,17 @@ export class OrgsService {
 
   private tokenHash(token: string): string {
     return createHash("sha256").update(token, "utf8").digest("hex");
+  }
+
+  private async getInviteByToken(orgId: string, token: string) {
+    const invite = await this.prisma.orgInvite.findUnique({ where: { tokenHash: this.tokenHash(token) } });
+    if (!invite || invite.orgId !== orgId) throw new NotFoundException("Invite not found");
+    return invite;
+  }
+
+  private assertInviteUsable(invite: { revokedAt: Date | null; declinedAt: Date | null; acceptedAt: Date | null; expiresAt: Date }) {
+    if (invite.revokedAt || invite.declinedAt || invite.acceptedAt) throw new ConflictException("Invite no longer valid");
+    if (invite.expiresAt < new Date()) throw new ConflictException("Invite expired");
   }
 
   async createInvite(orgId: string, actorUserId: string, actorMembershipId: string, email: string, roleId?: string | null) {
@@ -159,18 +177,53 @@ export class OrgsService {
     });
   }
 
-  async acceptInvite(orgId: string, actorUserId: string, token: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: actorUserId } });
-    if (!user) throw new UnauthorizedException("Invalid session");
+  async verifyInvite(orgId: string, token: string) {
+    const invite = await this.getInviteByToken(orgId, token);
+    this.assertInviteUsable(invite);
 
-    const invite = await this.prisma.orgInvite.findUnique({ where: { tokenHash: this.tokenHash(token) } });
-    if (!invite || invite.orgId !== orgId) throw new NotFoundException("Invite not found");
-    if (invite.revokedAt || invite.declinedAt || invite.acceptedAt) throw new ConflictException("Invite no longer valid");
-    if (invite.expiresAt < new Date()) throw new ConflictException("Invite expired");
-    if (invite.email.toLowerCase() !== user.email.toLowerCase()) throw new ForbiddenException("Invite does not match user");
+    const org = await this.getOrg(orgId);
+    return {
+      org: { id: org.id, name: org.name, slug: org.slug },
+      invite: {
+        id: invite.id,
+        org_id: invite.orgId,
+        email: invite.email,
+        role_id: invite.roleId ?? null,
+        invited_by_user_id: invite.invitedByUserId ?? null,
+        created_at: invite.createdAt.toISOString(),
+        expires_at: invite.expiresAt.toISOString()
+      }
+    };
+  }
+
+  async acceptInvitePublic(orgId: string, token: string, password: string, displayName?: string) {
+    const invite = await this.getInviteByToken(orgId, token);
+    this.assertInviteUsable(invite);
+
+    const normalizedEmail = invite.email.toLowerCase();
+
+    const org = await this.getOrg(orgId);
+
+    // Find or create user; for existing user validate password.
+    let user = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (!user) {
+      const salt = randomBytes(16).toString("hex");
+      user = await this.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          displayName: (displayName ?? normalizedEmail.split("@")[0] ?? "user").trim(),
+          passwordHash: hashPassword(password, salt),
+          passwordSalt: salt,
+          status: "ACTIVE"
+        }
+      });
+    } else {
+      if (user.status !== "ACTIVE") throw new UnauthorizedException("Invalid credentials");
+      if (!verifyPassword(password, user.passwordSalt, user.passwordHash)) throw new UnauthorizedException("Invalid credentials");
+    }
 
     const membership = await this.prisma.membership.findUnique({
-      where: { orgId_userId: { orgId, userId: actorUserId } }
+      where: { orgId_userId: { orgId, userId: user.id } }
     });
     if (membership && membership.status === "ACTIVE") throw new ConflictException("Already a member");
 
@@ -180,7 +233,7 @@ export class OrgsService {
         (await tx.membership.create({
           data: {
             orgId,
-            userId: actorUserId,
+            userId: user.id,
             roleId: invite.roleId ?? ROLE_IDS.ORG_MEMBER,
             status: "INVITED",
             joinedAt: null,
@@ -204,7 +257,7 @@ export class OrgsService {
     await this.prisma.auditLog.create({
       data: {
         orgId,
-        actorUserId,
+        actorUserId: user.id,
         action: "identity.invite.accepted",
         targetType: "org_invite",
         targetId: invite.id,
@@ -212,25 +265,27 @@ export class OrgsService {
       }
     });
 
-    return updatedMembership;
+    const session = await this.auth.issueSessionForMembership(user.id, orgId, updatedMembership.id, "identity.auth.invite.accepted");
+
+    return {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      user: { id: user.id, email: user.email, display_name: user.displayName },
+      org: { id: org.id, name: org.name, slug: org.slug },
+      membership: updatedMembership
+    };
   }
 
-  async declineInvite(orgId: string, actorUserId: string, token: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: actorUserId } });
-    if (!user) throw new UnauthorizedException("Invalid session");
-
-    const invite = await this.prisma.orgInvite.findUnique({ where: { tokenHash: this.tokenHash(token) } });
-    if (!invite || invite.orgId !== orgId) throw new NotFoundException("Invite not found");
-    if (invite.revokedAt || invite.declinedAt || invite.acceptedAt) throw new ConflictException("Invite no longer valid");
-    if (invite.expiresAt < new Date()) throw new ConflictException("Invite expired");
-    if (invite.email.toLowerCase() !== user.email.toLowerCase()) throw new ForbiddenException("Invite does not match user");
+  async declineInvitePublic(orgId: string, token: string) {
+    const invite = await this.getInviteByToken(orgId, token);
+    this.assertInviteUsable(invite);
 
     await this.prisma.orgInvite.update({ where: { id: invite.id }, data: { declinedAt: new Date() } });
 
     await this.prisma.auditLog.create({
       data: {
         orgId,
-        actorUserId,
+        actorUserId: null,
         action: "identity.invite.declined",
         targetType: "org_invite",
         targetId: invite.id,
