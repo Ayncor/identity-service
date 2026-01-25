@@ -1,0 +1,16 @@
+services:
+  identity-db:
+    image: postgres:16-alpine
+    container_name: ayncor-identity-db
+    environment:
+      POSTGRES_DB: identity
+      POSTGRES_USER: identity
+      POSTGRES_PASSWORD: identity
+    ports:
+      - "54321:5432"
+    volumes:
+      - identity_db_data:/var/lib/postgresql/data
+
+volumes:
+  identity_db_data:
+

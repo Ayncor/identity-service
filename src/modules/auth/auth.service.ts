@@ -1,15 +1,10 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, OnModuleInit, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { randomUUID } from "crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "crypto";
 
-import { InMemoryStore } from "../storage/storage.store";
-
-const ROLE_IDS = {
-  ORG_ADMIN: "11111111-1111-1111-1111-111111111111",
-  ORG_MEMBER: "22222222-2222-2222-2222-222222222222"
-} as const;
+import { PrismaService } from "../storage/prisma.service";
+import { ROLE_IDS } from "../storage/storage.types";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -32,60 +27,76 @@ function verifyPassword(password: string, salt: string, expectedHashHex: string)
 }
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
   constructor(
-    private readonly store: InMemoryStore,
+    private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly cfg: ConfigService
   ) {
-    // Dev bootstrap: create one user/org if configured.
-    this.bootstrapDevIdentity();
   }
 
-  private bootstrapDevIdentity() {
+  async onModuleInit() {
+    await this.bootstrapDevIdentity();
+  }
+
+  private tokenHash(token: string): string {
+    return createHash("sha256").update(token, "utf8").digest("hex");
+  }
+
+  private async bootstrapDevIdentity() {
     const email = (this.cfg.get<string>("BOOTSTRAP_EMAIL") ?? "").trim().toLowerCase();
     const password = this.cfg.get<string>("BOOTSTRAP_PASSWORD") ?? "";
     const orgSlug = (this.cfg.get<string>("BOOTSTRAP_ORG_SLUG") ?? "ayncor").trim();
     const orgName = this.cfg.get<string>("BOOTSTRAP_ORG_NAME") ?? "AynCor";
 
     if (!email || !password) return;
-    if (this.store.usersByEmail.has(email)) return;
+
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing) return;
 
     const salt = randomBytes(16).toString("hex");
-    const user = this.store.createUser({
-      email,
-      display_name: email.split("@")[0] ?? "admin",
-      password_hash: hashPassword(password, salt),
-      password_salt: salt
+    const user = await this.prisma.user.create({
+      data: {
+        email,
+        displayName: email.split("@")[0] ?? "admin",
+        passwordHash: hashPassword(password, salt),
+        passwordSalt: salt
+      }
     });
 
-    const org = this.store.orgsBySlug.get(orgSlug) ?? this.store.createOrg({ name: orgName, slug: orgSlug });
+    const org =
+      (await this.prisma.organization.findUnique({ where: { slug: orgSlug } })) ??
+      (await this.prisma.organization.create({ data: { name: orgName, slug: orgSlug } }));
 
-    const membership = this.store.createMembership({
-      org_id: org.id,
-      user_id: user.id,
-      role_id: ROLE_IDS.ORG_ADMIN,
-      status: "ACTIVE",
-      joined_at: nowIso(),
-      invited_by_user_id: null
+    const membership = await this.prisma.membership.create({
+      data: {
+        orgId: org.id,
+        userId: user.id,
+        roleId: ROLE_IDS.ORG_ADMIN,
+        status: "ACTIVE",
+        joinedAt: new Date()
+      }
     });
 
-    this.store.appendAudit({
-      org_id: org.id,
-      actor_user_id: user.id,
-      action: "identity.bootstrap.created",
-      target_type: "org",
-      target_id: org.id,
-      metadata_json: { email }
-    });
-
-    this.store.appendAudit({
-      org_id: org.id,
-      actor_user_id: user.id,
-      action: "identity.bootstrap.membership.created",
-      target_type: "membership",
-      target_id: membership.id,
-      metadata_json: { email }
+    await this.prisma.auditLog.createMany({
+      data: [
+        {
+          orgId: org.id,
+          actorUserId: user.id,
+          action: "identity.bootstrap.created",
+          targetType: "org",
+          targetId: org.id,
+          metadata: { email }
+        },
+        {
+          orgId: org.id,
+          actorUserId: user.id,
+          action: "identity.bootstrap.membership.created",
+          targetType: "membership",
+          targetId: membership.id,
+          metadata: { email }
+        }
+      ]
     });
   }
 
@@ -94,16 +105,18 @@ export class AuthService {
   }
 
   async login(email: string, password: string, orgSlug: string) {
-    const user = this.store.usersByEmail.get(email.toLowerCase());
+    const user = await this.prisma.user.findUnique({ where: { email: email.toLowerCase() } });
     if (!user || user.status !== "ACTIVE") throw new UnauthorizedException("Invalid credentials");
 
-    const org = this.store.orgsBySlug.get(orgSlug);
+    const org = await this.prisma.organization.findUnique({ where: { slug: orgSlug } });
     if (!org || org.status !== "ACTIVE") throw new UnauthorizedException("Invalid credentials");
 
-    const membership = this.store.membershipsByOrgUser.get(`${org.id}:${user.id}`);
+    const membership = await this.prisma.membership.findUnique({
+      where: { orgId_userId: { orgId: org.id, userId: user.id } }
+    });
     if (!membership || membership.status !== "ACTIVE") throw new UnauthorizedException("Invalid credentials");
 
-    if (!verifyPassword(password, user.password_salt, user.password_hash)) {
+    if (!verifyPassword(password, user.passwordSalt, user.passwordHash)) {
       throw new UnauthorizedException("Invalid credentials");
     }
 
@@ -111,91 +124,107 @@ export class AuthService {
       sub: user.id,
       org_id: org.id,
       membership_id: membership.id,
-      role_id: membership.role_id ?? null
+      role_id: membership.roleId ?? null
     });
 
     const refreshToken = randomUUID();
     const ttlMs = Number(this.cfg.get<string>("JWT_REFRESH_TTL_MS") ?? `${30 * 24 * 60 * 60 * 1000}`);
-    this.store.saveRefreshToken({
-      token: refreshToken,
-      user_id: user.id,
-      org_id: org.id,
-      membership_id: membership.id,
-      revoked_at: null,
-      expires_at: addMs(ttlMs),
-      created_at: nowIso()
+    await this.prisma.refreshToken.create({
+      data: {
+        tokenHash: this.tokenHash(refreshToken),
+        userId: user.id,
+        orgId: org.id,
+        membershipId: membership.id,
+        expiresAt: new Date(Date.now() + ttlMs)
+      }
     });
 
-    this.store.appendAudit({
-      org_id: org.id,
-      actor_user_id: user.id,
-      action: "identity.auth.login",
-      target_type: "user",
-      target_id: user.id,
-      metadata_json: {}
+    await this.prisma.auditLog.create({
+      data: {
+        orgId: org.id,
+        actorUserId: user.id,
+        action: "identity.auth.login",
+        targetType: "user",
+        targetId: user.id,
+        metadata: {}
+      }
     });
 
     return { access_token: accessToken, refresh_token: refreshToken, user, org, membership };
   }
 
   async refresh(refreshToken: string) {
-    const rt = this.store.refreshTokensByToken.get(refreshToken);
-    if (!rt || rt.revoked_at) throw new UnauthorizedException("Invalid refresh token");
-    if (new Date(rt.expires_at) < new Date()) throw new UnauthorizedException("Invalid refresh token");
-
-    // rotate refresh token
-    rt.revoked_at = nowIso();
-    this.store.refreshTokensByToken.set(refreshToken, rt);
+    const existing = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.tokenHash(refreshToken) }
+    });
+    if (!existing || existing.revokedAt) throw new UnauthorizedException("Invalid refresh token");
+    if (existing.expiresAt < new Date()) throw new UnauthorizedException("Invalid refresh token");
 
     const newRefresh = randomUUID();
     const ttlMs = Number(this.cfg.get<string>("JWT_REFRESH_TTL_MS") ?? `${30 * 24 * 60 * 60 * 1000}`);
-    this.store.saveRefreshToken({
-      token: newRefresh,
-      user_id: rt.user_id,
-      org_id: rt.org_id,
-      membership_id: rt.membership_id,
-      revoked_at: null,
-      expires_at: addMs(ttlMs),
-      created_at: nowIso()
+    const created = await this.prisma.refreshToken.create({
+      data: {
+        tokenHash: this.tokenHash(newRefresh),
+        userId: existing.userId,
+        orgId: existing.orgId,
+        membershipId: existing.membershipId,
+        expiresAt: new Date(Date.now() + ttlMs)
+      }
     });
 
-    const user = this.store.usersById.get(rt.user_id);
-    const org = this.store.orgsById.get(rt.org_id);
-    const membership = this.store.membershipsById.get(rt.membership_id);
+    await this.prisma.refreshToken.update({
+      where: { id: existing.id },
+      data: { revokedAt: new Date(), replacedById: created.id }
+    });
+
+    const [user, org, membership] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: existing.userId } }),
+      this.prisma.organization.findUnique({ where: { id: existing.orgId } }),
+      this.prisma.membership.findUnique({ where: { id: existing.membershipId } })
+    ]);
     if (!user || !org || !membership) throw new UnauthorizedException("Invalid refresh token");
 
     const accessToken = this.jwt.sign({
       sub: user.id,
       org_id: org.id,
       membership_id: membership.id,
-      role_id: membership.role_id ?? null
+      role_id: membership.roleId ?? null
     });
 
-    this.store.appendAudit({
-      org_id: org.id,
-      actor_user_id: user.id,
-      action: "identity.auth.refresh",
-      target_type: "user",
-      target_id: user.id,
-      metadata_json: {}
+    await this.prisma.auditLog.create({
+      data: {
+        orgId: org.id,
+        actorUserId: user.id,
+        action: "identity.auth.refresh",
+        targetType: "user",
+        targetId: user.id,
+        metadata: {}
+      }
     });
 
     return { access_token: accessToken, refresh_token: newRefresh, user, org, membership };
   }
 
   async logout(refreshToken: string) {
-    const rt = this.store.refreshTokensByToken.get(refreshToken);
-    if (!rt || rt.revoked_at) throw new UnauthorizedException("Invalid refresh token");
-    rt.revoked_at = nowIso();
-    this.store.refreshTokensByToken.set(refreshToken, rt);
+    const existing = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.tokenHash(refreshToken) }
+    });
+    if (!existing || existing.revokedAt) throw new UnauthorizedException("Invalid refresh token");
 
-    this.store.appendAudit({
-      org_id: rt.org_id,
-      actor_user_id: rt.user_id,
-      action: "identity.auth.logout",
-      target_type: "user",
-      target_id: rt.user_id,
-      metadata_json: {}
+    await this.prisma.refreshToken.update({
+      where: { id: existing.id },
+      data: { revokedAt: new Date() }
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        orgId: existing.orgId,
+        actorUserId: existing.userId,
+        action: "identity.auth.logout",
+        targetType: "user",
+        targetId: existing.userId,
+        metadata: {}
+      }
     });
   }
 }
