@@ -1,5 +1,6 @@
-import { Body, Controller, HttpCode, Post } from "@nestjs/common";
+import { Body, Controller, HttpCode, Post, Req, UseGuards } from "@nestjs/common";
 
+import { JwtAuthGuard, type RequestWithPrincipal } from "../../shared/auth/auth.guard";
 import { LoginRequestDto, LogoutRequestDto, RefreshRequestDto } from "./auth.dto";
 import { AuthService } from "./auth.service";
 
@@ -35,6 +36,14 @@ export class AuthController {
   @HttpCode(204)
   async logout(@Body() body: LogoutRequestDto) {
     await this.auth.logout(body.refresh_token);
+  }
+
+  @Post("logout-all")
+  @HttpCode(204)
+  @UseGuards(JwtAuthGuard)
+  async logoutAll(@Req() req: RequestWithPrincipal) {
+    const p = req.principal!;
+    await this.auth.logoutAll(p.user_id, p.org_id);
   }
 
   private toUser(u: any) {
