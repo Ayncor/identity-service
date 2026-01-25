@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 
 import { JwtAuthGuard, type RequestWithPrincipal } from "../../shared/auth/auth.guard";
 import {
@@ -94,6 +95,8 @@ export class OrgsController {
   }
 
   @Post("orgs/:orgId/invites/accept")
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60 } })
   async acceptInvite(@Param("orgId") orgId: string, @Body() body: AcceptInviteRequestDto) {
     const session = await this.orgs.acceptInvitePublic(orgId, body.token, body.password, body.display_name);
     return {
