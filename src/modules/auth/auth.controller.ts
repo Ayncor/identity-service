@@ -1,6 +1,7 @@
-import { Body, Controller, HttpCode, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, HttpCode, NotImplementedException, Post, Req, UseGuards } from "@nestjs/common";
+import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 import { JwtAuthGuard, type RequestWithPrincipal } from "../../shared/auth/auth.guard";
-import { LoginRequestDto, LogoutRequestDto, RefreshRequestDto } from "./auth.dto";
+import { LoginRequestDto, LogoutRequestDto, PasswordResetConfirmDto, PasswordResetRequestDto, RefreshRequestDto } from "./auth.dto";
 import { AuthService } from "./auth.service";
 
 @Controller("auth")
@@ -8,6 +9,8 @@ export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Post("login")
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60 } })
   async login(@Body() body: LoginRequestDto) {
     const session = await this.auth.login(body.email, body.password, body.org_slug);
     return {
@@ -20,6 +23,8 @@ export class AuthController {
   }
 
   @Post("refresh")
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 60 } })
   async refresh(@Body() body: RefreshRequestDto) {
     const session = await this.auth.refresh(body.refresh_token);
     return {
@@ -43,6 +48,20 @@ export class AuthController {
   async logoutAll(@Req() req: RequestWithPrincipal) {
     const p = req.principal!;
     await this.auth.logoutAll(p.user_id, p.org_id);
+  }
+
+  // Placeholder endpoints (reserved API surface)
+  @Post("password-reset/request")
+  @HttpCode(202)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60 } })
+  async requestPasswordReset(@Body() _body: PasswordResetRequestDto) {
+    // Intentionally returns 202 always to avoid user enumeration.
+  }
+
+  @Post("password-reset/confirm")
+  async confirmPasswordReset(@Body() _body: PasswordResetConfirmDto) {
+    throw new NotImplementedException("Password reset is not implemented yet");
   }
 
   private toUser(u: any) {
