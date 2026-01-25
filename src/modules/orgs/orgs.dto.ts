@@ -32,3 +32,27 @@ export class UpdateMemberRequestDto {
   status?: "ACTIVE" | "SUSPENDED" | "LEFT";
 }
 
+export class CreateInviteRequestDto {
+  @IsEmail()
+  email!: string;
+
+  @IsOptional()
+  @IsString()
+  role_id?: string | null;
+}
+
+export class RevokeInviteRequestDto {
+  @IsString()
+  invite_id!: string;
+}
+
+export class AcceptInviteRequestDto {
+  @IsString()
+  token!: string;
+}
+
+export class DeclineInviteRequestDto {
+  @IsString()
+  token!: string;
+}
+

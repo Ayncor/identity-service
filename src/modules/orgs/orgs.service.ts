@@ -1,5 +1,5 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import { randomBytes, scryptSync } from "crypto";
+import { ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { createHash, randomBytes, randomUUID, scryptSync } from "crypto";
 
 import { PrismaService } from "../storage/prisma.service";
 import { AuthService } from "../auth/auth.service";
@@ -71,6 +71,172 @@ export class OrgsService {
     if (!actor || actor.orgId !== orgId) throw new ForbiddenException("Forbidden");
     if (actor.status !== "ACTIVE") throw new ForbiddenException("Forbidden");
     if (actor.roleId !== this.auth.getRoleIds().ORG_ADMIN) throw new ForbiddenException("Forbidden");
+  }
+
+  private tokenHash(token: string): string {
+    return createHash("sha256").update(token, "utf8").digest("hex");
+  }
+
+  async createInvite(orgId: string, actorUserId: string, actorMembershipId: string, email: string, roleId?: string | null) {
+    await this.assertOrgAdmin(orgId, actorMembershipId);
+    const org = await this.getOrg(orgId);
+
+    const normalizedEmail = email.toLowerCase();
+
+    // Reuse or create an invite. If there is an outstanding invite, revoke it and issue a new one.
+    const existingActive = await this.prisma.orgInvite.findFirst({
+      where: {
+        orgId: org.id,
+        email: normalizedEmail,
+        revokedAt: null,
+        acceptedAt: null,
+        declinedAt: null,
+        expiresAt: { gt: new Date() }
+      },
+      orderBy: { createdAt: "desc" }
+    });
+
+    if (existingActive) {
+      await this.prisma.orgInvite.update({ where: { id: existingActive.id }, data: { revokedAt: new Date() } });
+    }
+
+    const token = randomUUID();
+    const ttlMs = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const invite = await this.prisma.orgInvite.create({
+      data: {
+        orgId: org.id,
+        email: normalizedEmail,
+        roleId: roleId ?? ROLE_IDS.ORG_MEMBER,
+        invitedByUserId: actorUserId,
+        tokenHash: this.tokenHash(token),
+        expiresAt: new Date(Date.now() + ttlMs)
+      }
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        orgId: org.id,
+        actorUserId,
+        action: "identity.invite.created",
+        targetType: "org_invite",
+        targetId: invite.id,
+        metadata: { email: normalizedEmail, role_id: invite.roleId }
+      }
+    });
+
+    return { invite, token };
+  }
+
+  async listInvites(orgId: string, actorMembershipId: string) {
+    await this.assertOrgAdmin(orgId, actorMembershipId);
+    await this.getOrg(orgId);
+
+    return await this.prisma.orgInvite.findMany({
+      where: { orgId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }]
+    });
+  }
+
+  async revokeInvite(orgId: string, actorUserId: string, actorMembershipId: string, inviteId: string) {
+    await this.assertOrgAdmin(orgId, actorMembershipId);
+    const invite = await this.prisma.orgInvite.findUnique({ where: { id: inviteId } });
+    if (!invite || invite.orgId !== orgId) throw new NotFoundException("Invite not found");
+
+    await this.prisma.orgInvite.update({
+      where: { id: inviteId },
+      data: { revokedAt: new Date() }
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        orgId,
+        actorUserId,
+        action: "identity.invite.revoked",
+        targetType: "org_invite",
+        targetId: inviteId,
+        metadata: {}
+      }
+    });
+  }
+
+  async acceptInvite(orgId: string, actorUserId: string, token: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: actorUserId } });
+    if (!user) throw new UnauthorizedException("Invalid session");
+
+    const invite = await this.prisma.orgInvite.findUnique({ where: { tokenHash: this.tokenHash(token) } });
+    if (!invite || invite.orgId !== orgId) throw new NotFoundException("Invite not found");
+    if (invite.revokedAt || invite.declinedAt || invite.acceptedAt) throw new ConflictException("Invite no longer valid");
+    if (invite.expiresAt < new Date()) throw new ConflictException("Invite expired");
+    if (invite.email.toLowerCase() !== user.email.toLowerCase()) throw new ForbiddenException("Invite does not match user");
+
+    const membership = await this.prisma.membership.findUnique({
+      where: { orgId_userId: { orgId, userId: actorUserId } }
+    });
+    if (membership && membership.status === "ACTIVE") throw new ConflictException("Already a member");
+
+    const updatedMembership = await this.prisma.$transaction(async (tx) => {
+      const m =
+        membership ??
+        (await tx.membership.create({
+          data: {
+            orgId,
+            userId: actorUserId,
+            roleId: invite.roleId ?? ROLE_IDS.ORG_MEMBER,
+            status: "INVITED",
+            joinedAt: null,
+            invitedByUserId: invite.invitedByUserId
+          }
+        }));
+
+      const next = await tx.membership.update({
+        where: { id: m.id },
+        data: {
+          roleId: invite.roleId ?? m.roleId,
+          status: "ACTIVE",
+          joinedAt: m.joinedAt ?? new Date()
+        }
+      });
+
+      await tx.orgInvite.update({ where: { id: invite.id }, data: { acceptedAt: new Date() } });
+      return next;
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        orgId,
+        actorUserId,
+        action: "identity.invite.accepted",
+        targetType: "org_invite",
+        targetId: invite.id,
+        metadata: { membership_id: updatedMembership.id }
+      }
+    });
+
+    return updatedMembership;
+  }
+
+  async declineInvite(orgId: string, actorUserId: string, token: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: actorUserId } });
+    if (!user) throw new UnauthorizedException("Invalid session");
+
+    const invite = await this.prisma.orgInvite.findUnique({ where: { tokenHash: this.tokenHash(token) } });
+    if (!invite || invite.orgId !== orgId) throw new NotFoundException("Invite not found");
+    if (invite.revokedAt || invite.declinedAt || invite.acceptedAt) throw new ConflictException("Invite no longer valid");
+    if (invite.expiresAt < new Date()) throw new ConflictException("Invite expired");
+    if (invite.email.toLowerCase() !== user.email.toLowerCase()) throw new ForbiddenException("Invite does not match user");
+
+    await this.prisma.orgInvite.update({ where: { id: invite.id }, data: { declinedAt: new Date() } });
+
+    await this.prisma.auditLog.create({
+      data: {
+        orgId,
+        actorUserId,
+        action: "identity.invite.declined",
+        targetType: "org_invite",
+        targetId: invite.id,
+        metadata: {}
+      }
+    });
   }
 
   async createMember(orgId: string, actorUserId: string, actorMembershipId: string, email: string, roleId?: string | null) {
