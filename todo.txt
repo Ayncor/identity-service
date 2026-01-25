@@ -1,0 +1,118 @@
+identity-service TODOs (security + enterprise hardening)
+=======================================================
+
+This file tracks follow-up work for identity-service.
+Current status: MVP is functional (auth + refresh rotation + orgs + memberships + invites + audit + health).
+
+
+DO NOW (before starting core-service)
+------------------------------------
+
+1) Rate limit high-risk endpoints
+   - Why:
+     - Prevent brute-force password guessing and token abuse.
+     - Protect infra and reduce noisy audit logs.
+   - Scope (minimal):
+     - POST /auth/login
+     - POST /auth/refresh
+     - POST /orgs/:orgId/invites/accept  (public invite accept)
+     - (Optional) POST /orgs/:orgId/invites/verify, POST /orgs/:orgId/invites/decline
+   - Suggested policy (starter):
+     - /auth/login: 5 req/min per IP + 5 req/min per email (best-effort)
+     - /auth/refresh: 30 req/min per token hash or per IP
+     - invite accept: 5 req/min per IP
+   - Implementation notes:
+     - Use NestJS throttling (e.g., @nestjs/throttler) or a reverse-proxy rate limiter.
+     - Prefer a shared store (Redis) for multi-instance deployments; in-memory is OK for local dev.
+     - Return 429 with a clear error code (rate_limited) and retry-after.
+
+2) Password reset placeholder endpoints (API surface reservation)
+   - Why:
+     - Frontend can integrate flows early; backend can return "not implemented" until email delivery exists.
+     - Avoid breaking API changes later.
+   - Minimal endpoints:
+     - POST /auth/password-reset/request  { email, org_slug? }
+       - Return 202 always (to avoid user enumeration).
+     - POST /auth/password-reset/confirm  { token, new_password }
+       - Return 501 Not Implemented for now, or 400 with a specific code.
+   - Security notes:
+     - Never reveal whether an email exists.
+     - Add audit events for reset requests (even if not implemented).
+
+3) Secrets hygiene (JWT_ACCESS_SECRET)
+   - Why:
+     - JWT signing key compromise == full account compromise until rotated.
+   - Requirements:
+     - Use long, random secret (>= 32 bytes / 256-bit). Base64 is fine.
+     - Do NOT commit secrets to git.
+     - Ensure .env files are ignored.
+   - Rotation-ready approach:
+     - Support multiple active signing keys (kid header) later, so you can rotate without instant logout.
+     - Keep a plan for rotating access signing keys and invalidating refresh tokens if needed.
+
+
+DO LATER (after core-service is producing real workflows)
+--------------------------------------------------------
+
+1) Email verification
+   - What:
+     - Confirm the user controls the email address before enabling sensitive actions.
+   - Typical flow:
+     - On signup/invite accept: create user with email_verified_at = null
+     - Send verification email with one-time token (short TTL)
+     - POST /auth/email/verify { token } marks verified
+   - Notes:
+     - Many products allow login before verification but restrict actions (e.g., invites, admin ops).
+     - Add audit events:
+       - identity.email.verify.requested
+       - identity.email.verified
+
+2) Password reset flow (with email delivery)
+   - What:
+     - Securely reset account password via email-based token.
+   - Requirements:
+     - Token must be one-time, short-lived, hashed at rest (store tokenHash in DB).
+     - Rate limit requests.
+     - After password reset:
+       - revoke-all refresh tokens for that user/org (force logout across devices)
+       - add audit event identity.auth.password_reset.completed
+   - Optional enhancements:
+     - Notify user on password change.
+     - Add "recently changed password" throttling.
+
+3) MFA (Multi-Factor Authentication)
+   - What:
+     - Add a second factor: TOTP (Authenticator apps) first; WebAuthn later.
+   - Suggested phases:
+     - Phase 1: TOTP enrollment + challenge on login for high-privilege roles.
+     - Phase 2: WebAuthn (passkeys/security keys).
+   - Data model:
+     - mfa_methods table (type, secret/encrypted material, created_at, last_used_at)
+   - UX notes:
+     - Recovery codes (one-time) are critical.
+     - Admin enforcement per org is common (require MFA for org admins).
+
+4) SSO (SAML / OIDC)
+   - What:
+     - Enterprise login via identity provider (Okta, Azure AD, Google Workspace).
+   - Approach:
+     - OIDC first (simpler), then SAML for larger enterprises.
+     - Map IdP identities to existing users by verified email + org domain rules.
+   - Data model:
+     - org_sso_settings (provider, metadata, domains, enforced)
+     - external_identities (user_id, provider, subject, org_id)
+   - Security:
+     - Enforce strict org isolation (no cross-org SSO confusion).
+
+5) Advanced security
+   - Device binding / session management:
+     - Store device fingerprint metadata for refresh tokens (optional, privacy-sensitive).
+     - Allow user to view active sessions and revoke individual sessions.
+   - Anomaly detection:
+     - Detect impossible travel, unusual IPs, high refresh reuse signals.
+     - Trigger revoke-all + notify user/admin.
+   - Brute-force & credential stuffing defenses:
+     - IP reputation, progressive delays, CAPTCHA (last resort).
+   - Audit quality:
+     - Ensure every sensitive security event emits audit logs with stable action names.
+
