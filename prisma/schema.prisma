@@ -42,7 +42,7 @@ model User {
   deletedAt       DateTime?
 
   memberships Membership[]
-  auditLogs    AuditLog[] @relation("AuditActor")
+  auditLogs   AuditLog[]   @relation("AuditActor")
 }
 
 model Organization {
@@ -55,19 +55,20 @@ model Organization {
   deletedAt DateTime?
 
   memberships Membership[]
-  auditLogs    AuditLog[]
+  auditLogs   AuditLog[]
+  invites     OrgInvite[]
 }
 
 model Membership {
-  id             String           @id @default(uuid()) @db.Uuid
-  orgId          String           @db.Uuid
-  userId         String           @db.Uuid
-  roleId         String?          @db.Uuid
-  status         MembershipStatus @default(INVITED)
-  joinedAt       DateTime?
-  invitedByUserId String?         @db.Uuid
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id              String           @id @default(uuid()) @db.Uuid
+  orgId           String           @db.Uuid
+  userId          String           @db.Uuid
+  roleId          String?          @db.Uuid
+  status          MembershipStatus @default(INVITED)
+  joinedAt        DateTime?
+  invitedByUserId String?          @db.Uuid
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -80,15 +81,15 @@ model Membership {
 }
 
 model RefreshToken {
-  id           String   @id @default(uuid()) @db.Uuid
-  tokenHash    String   @unique
-  userId       String   @db.Uuid
-  orgId        String   @db.Uuid
-  membershipId String   @db.Uuid
-  createdAt    DateTime @default(now())
+  id           String    @id @default(uuid()) @db.Uuid
+  tokenHash    String    @unique
+  userId       String    @db.Uuid
+  orgId        String    @db.Uuid
+  membershipId String    @db.Uuid
+  createdAt    DateTime  @default(now())
   expiresAt    DateTime
   revokedAt    DateTime?
-  replacedById String?  @db.Uuid
+  replacedById String?   @db.Uuid
 
   membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
 
@@ -97,15 +98,37 @@ model RefreshToken {
   @@index([membershipId])
 }
 
+model OrgInvite {
+  id              String  @id @default(uuid()) @db.Uuid
+  orgId           String  @db.Uuid
+  email           String
+  roleId          String? @db.Uuid
+  invitedByUserId String? @db.Uuid
+
+  // sha256 hash of the invite token (token itself is only shown once)
+  tokenHash String @unique
+
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  declinedAt DateTime?
+  revokedAt  DateTime?
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([email])
+}
+
 model AuditLog {
-  id         String   @id @default(uuid()) @db.Uuid
-  orgId      String   @db.Uuid
-  actorUserId String? @db.Uuid
-  action     String
-  targetType String
-  targetId   String?  @db.Uuid
-  metadata   Json
-  createdAt  DateTime @default(now())
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  actorUserId String?  @db.Uuid
+  action      String
+  targetType  String
+  targetId    String?  @db.Uuid
+  metadata    Json
+  createdAt   DateTime @default(now())
 
   org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   actor User?        @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
@@ -113,4 +136,3 @@ model AuditLog {
   @@index([orgId, createdAt])
   @@index([actorUserId])
 }
-
