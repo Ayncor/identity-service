@@ -4,7 +4,7 @@ import { ConfigService } from "@nestjs/config";
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "crypto";
 
 import { PrismaService } from "../storage/prisma.service";
-import { ROLE_IDS } from "../storage/storage.types";
+import { ROLE_IDS, DEFAULT_ROLE_PERMISSIONS } from "../storage/storage.types";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -89,11 +89,40 @@ export class AuthService implements OnModuleInit {
       (await this.prisma.organization.findUnique({ where: { slug: orgSlug } })) ??
       (await this.prisma.organization.create({ data: { name: orgName, slug: orgSlug } }));
 
+    // Ensure system roles exist (look up by orgId + name since roles are org-scoped)
+    let adminRole = await this.prisma.role.findUnique({
+      where: { orgId_name: { orgId: org.id, name: "ORG_ADMIN" } }
+    });
+    if (!adminRole) {
+      adminRole = await this.prisma.role.create({
+        data: {
+          orgId: org.id,
+          name: "ORG_ADMIN",
+          permissions: DEFAULT_ROLE_PERMISSIONS[ROLE_IDS.ORG_ADMIN],
+          isSystem: true
+        }
+      });
+    }
+
+    let memberRole = await this.prisma.role.findUnique({
+      where: { orgId_name: { orgId: org.id, name: "ORG_MEMBER" } }
+    });
+    if (!memberRole) {
+      memberRole = await this.prisma.role.create({
+        data: {
+          orgId: org.id,
+          name: "ORG_MEMBER",
+          permissions: DEFAULT_ROLE_PERMISSIONS[ROLE_IDS.ORG_MEMBER],
+          isSystem: true
+        }
+      });
+    }
+
     const membership = await this.prisma.membership.create({
       data: {
         orgId: org.id,
         userId: user.id,
-        roleId: ROLE_IDS.ORG_ADMIN,
+        roleId: adminRole.id,
         status: "ACTIVE",
         joinedAt: new Date()
       }
@@ -145,17 +174,31 @@ export class AuthService implements OnModuleInit {
     return { ...session, user, org, membership };
   }
 
+  private async resolvePermissions(roleId: string | null): Promise<string[]> {
+    if (!roleId) return [];
+    // Try to load from Role model
+    const role = await this.prisma.role.findUnique({ where: { id: roleId } });
+    if (role) return role.permissions;
+    // Fallback to default permissions for system roles
+    return DEFAULT_ROLE_PERMISSIONS[roleId] ?? [];
+  }
+
   async issueSessionForMembership(userId: string, orgId: string, membershipId: string, auditAction?: string) {
     const membership = await this.prisma.membership.findUnique({ where: { id: membershipId } });
     if (!membership || membership.userId !== userId || membership.orgId !== orgId) {
       throw new UnauthorizedException("Invalid session");
     }
 
+    const permissions = await this.resolvePermissions(membership.roleId);
+    const jti = randomUUID(); // JWT ID for audit correlation
+
     const accessToken = this.jwt.sign({
       sub: userId,
       org_id: orgId,
       membership_id: membershipId,
-      role_id: membership.roleId ?? null
+      role_id: membership.roleId ?? null,
+      perms: permissions,
+      jti
     });
 
     const refreshToken = randomUUID();
@@ -262,11 +305,16 @@ export class AuthService implements OnModuleInit {
     ]);
     if (!user || !org || !membership) throw new UnauthorizedException("Invalid refresh token");
 
+    const permissions = await this.resolvePermissions(membership.roleId);
+    const jti = randomUUID();
+
     const accessToken = this.jwt.sign({
       sub: user.id,
       org_id: org.id,
       membership_id: membership.id,
-      role_id: membership.roleId ?? null
+      role_id: membership.roleId ?? null,
+      perms: permissions,
+      jti
     });
 
     await this.prisma.auditLog.create({

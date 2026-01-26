@@ -57,6 +57,23 @@ model Organization {
   memberships Membership[]
   auditLogs   AuditLog[]
   invites     OrgInvite[]
+  roles       Role[]
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  orgId       String   @db.Uuid
+  name        String
+  permissions String[] // Array of permission codes
+  isSystem    Boolean  @default(false) // true for built-in roles (ORG_ADMIN, etc.)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  memberships Membership[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
 }
 
 model Membership {
@@ -72,6 +89,7 @@ model Membership {
 
   org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role?        @relation(fields: [roleId], references: [id], onDelete: SetNull)
 
   refreshTokens RefreshToken[]
 

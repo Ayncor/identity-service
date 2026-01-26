@@ -33,11 +33,26 @@ export class OrgsService {
 
     const org = await this.prisma.organization.create({ data: { name, slug } });
 
+    // Ensure system roles exist for the new org
+    let adminRole = await this.prisma.role.findUnique({
+      where: { orgId_name: { orgId: org.id, name: "ORG_ADMIN" } }
+    });
+    if (!adminRole) {
+      adminRole = await this.prisma.role.create({
+        data: {
+          orgId: org.id,
+          name: "ORG_ADMIN",
+          permissions: ["org:read", "org:manage_members", "org:manage_roles", "audit:read", "channels:manage", "threads:moderate"],
+          isSystem: true
+        }
+      });
+    }
+
     const membership = await this.prisma.membership.create({
       data: {
         orgId: org.id,
         userId: actorUserId,
-        roleId: this.auth.getRoleIds().ORG_ADMIN,
+        roleId: adminRole.id,
         status: "ACTIVE",
         joinedAt: new Date()
       }
@@ -74,10 +89,13 @@ export class OrgsService {
   }
 
   private async assertOrgAdmin(orgId: string, actorMembershipId: string) {
-    const actor = await this.prisma.membership.findUnique({ where: { id: actorMembershipId } });
+    const actor = await this.prisma.membership.findUnique({
+      where: { id: actorMembershipId },
+      include: { role: true }
+    });
     if (!actor || actor.orgId !== orgId) throw new ForbiddenException("Forbidden");
     if (actor.status !== "ACTIVE") throw new ForbiddenException("Forbidden");
-    if (actor.roleId !== this.auth.getRoleIds().ORG_ADMIN) throw new ForbiddenException("Forbidden");
+    if (!actor.role || actor.role.name !== "ORG_ADMIN") throw new ForbiddenException("Forbidden");
   }
 
   private tokenHash(token: string): string {
@@ -118,13 +136,23 @@ export class OrgsService {
       await this.prisma.orgInvite.update({ where: { id: existingActive.id }, data: { revokedAt: new Date() } });
     }
 
+    // Resolve default role if not provided
+    let finalRoleId = roleId;
+    if (!finalRoleId) {
+      const memberRole = await this.prisma.role.findUnique({
+        where: { orgId_name: { orgId: org.id, name: "ORG_MEMBER" } }
+      });
+      if (!memberRole) throw new NotFoundException("ORG_MEMBER role not found for org");
+      finalRoleId = memberRole.id;
+    }
+
     const token = randomUUID();
     const ttlMs = 7 * 24 * 60 * 60 * 1000; // 7 days
     const invite = await this.prisma.orgInvite.create({
       data: {
         orgId: org.id,
         email: normalizedEmail,
-        roleId: roleId ?? ROLE_IDS.ORG_MEMBER,
+        roleId: finalRoleId,
         invitedByUserId: actorUserId,
         tokenHash: this.tokenHash(token),
         expiresAt: new Date(Date.now() + ttlMs)
@@ -227,6 +255,16 @@ export class OrgsService {
     });
     if (membership && membership.status === "ACTIVE") throw new ConflictException("Already a member");
 
+    // Resolve default role if invite doesn't have one
+    let finalRoleId = invite.roleId;
+    if (!finalRoleId) {
+      const memberRole = await this.prisma.role.findUnique({
+        where: { orgId_name: { orgId, name: "ORG_MEMBER" } }
+      });
+      if (!memberRole) throw new NotFoundException("ORG_MEMBER role not found for org");
+      finalRoleId = memberRole.id;
+    }
+
     const updatedMembership = await this.prisma.$transaction(async (tx) => {
       const m =
         membership ??
@@ -234,7 +272,7 @@ export class OrgsService {
           data: {
             orgId,
             userId: user.id,
-            roleId: invite.roleId ?? ROLE_IDS.ORG_MEMBER,
+            roleId: finalRoleId,
             status: "INVITED",
             joinedAt: null,
             invitedByUserId: invite.invitedByUserId
@@ -322,11 +360,21 @@ export class OrgsService {
     });
     if (existingMembership) throw new ConflictException("Membership already exists");
 
+    // Resolve default role if not provided
+    let finalRoleId = roleId;
+    if (!finalRoleId) {
+      const memberRole = await this.prisma.role.findUnique({
+        where: { orgId_name: { orgId: org.id, name: "ORG_MEMBER" } }
+      });
+      if (!memberRole) throw new NotFoundException("ORG_MEMBER role not found for org");
+      finalRoleId = memberRole.id;
+    }
+
     const membership = await this.prisma.membership.create({
       data: {
         orgId: org.id,
         userId: user.id,
-        roleId: roleId ?? ROLE_IDS.ORG_MEMBER,
+        roleId: finalRoleId,
         status: "INVITED",
         joinedAt: null,
         invitedByUserId: actorUserId
