@@ -3,6 +3,8 @@ export type JwtAccessClaims = {
   org_id: string;
   membership_id: string;
   role_id?: string | null;
+  perms?: string[]; // Flattened permissions array
+  jti?: string; // JWT ID for audit correlation
 };
 
 export type AuthPrincipal = {
@@ -10,5 +12,7 @@ export type AuthPrincipal = {
   org_id: string;
   membership_id: string;
   role_id?: string | null;
+  perms?: string[]; // Flattened permissions array
+  jti?: string; // JWT ID for audit correlation
 };
 

@@ -24,7 +24,9 @@ export class JwtAuthGuard implements CanActivate {
         user_id: claims.sub,
         org_id: claims.org_id,
         membership_id: claims.membership_id,
-        role_id: claims.role_id ?? null
+        role_id: claims.role_id ?? null,
+        perms: claims.perms ?? [],
+        jti: claims.jti
       };
       return true;
     } catch {
