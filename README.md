@@ -97,6 +97,41 @@ Readiness check with DB connectivity (no auth required).
 
 ---
 
+## JWT Token Structure
+
+All authenticated endpoints require a JWT access token in the `Authorization` header:
+
+```
+Authorization: Bearer <access_token>
+```
+
+### JWT Claims
+
+The JWT token includes the following claims:
+
+- `sub` - User ID (string, required)
+- `org_id` - Organization ID (string, required)
+- `membership_id` - Membership ID (string, required)
+- `role_id` - Role ID (string, optional)
+- `perms` - Array of permission strings (string[], optional)
+- `jti` - JWT ID for audit correlation (string, optional)
+
+**Example JWT payload:**
+```json
+{
+  "sub": "3012b5ce-e1b6-4720-9bd6-d361334337a1",
+  "org_id": "ca6b80e6-1e9b-47fb-a972-7ea736c1c3d8",
+  "membership_id": "a7ab9602-d605-49c7-9f1e-e5af7e1dfae4",
+  "role_id": "b26f4427-2cd9-4340-9992-fe8f57350dd5",
+  "perms": ["org:read", "org:manage_members", "org:manage_roles", "audit:read", "channels:manage", "threads:moderate"],
+  "jti": "a52ebfd8-58ea-440e-bb83-0b69b73fe00d"
+}
+```
+
+All operations are **org-scoped** — users can only access resources within their organization.
+
+---
+
 ### Authentication
 
 #### `POST /auth/login`
@@ -519,6 +554,16 @@ List audit logs for an organization (org members only).
 
 ## Testing
 
+### Quick Role Test
+
+To quickly verify that roles and permissions are working correctly, run:
+
+```powershell
+.\test-roles.ps1
+```
+
+This script automatically tests login, JWT decoding, permissions, and refresh token flow. See the [Roles and Permissions](#roles-and-permissions) section for more details.
+
 ### PowerShell Example
 
 ```powershell
@@ -560,11 +605,69 @@ Invoke-RestMethod -Uri "http://localhost:3001/orgs/$orgId/audit?page_size=50" -H
 
 ---
 
+## Roles and Permissions
+
+The service implements **Role-Based Access Control (RBAC)** with permissions embedded in JWT tokens.
+
+### System Roles
+
+Two system roles are automatically created for each organization:
+
+#### `ORG_ADMIN`
+Full administrative access. Permissions:
+- `org:read` - View organization details
+- `org:manage_members` - Add/remove/update members
+- `org:manage_roles` - Create and manage custom roles
+- `audit:read` - View audit logs
+- `channels:manage` - Create and manage channels
+- `threads:moderate` - Moderate threads (change state, archive)
+
+#### `ORG_MEMBER`
+Standard member access. Permissions:
+- `org:read` - View organization details
+- `channels:read` - View channels
+- `threads:read` - View threads
+- `threads:write` - Create messages and threads
+
+### JWT Permissions
+
+Permissions are included in the JWT `perms` array, allowing services (like `core-service`) to check permissions without database lookups.
+
+**Example JWT payload:**
+```json
+{
+  "sub": "user-uuid",
+  "org_id": "org-uuid",
+  "membership_id": "membership-uuid",
+  "role_id": "role-uuid",
+  "perms": ["org:read", "org:manage_members", "channels:manage"],
+  "jti": "jwt-uuid"
+}
+```
+
+### Testing Roles
+
+Use the provided test script to verify roles and permissions:
+
+```powershell
+.\test-roles.ps1
+```
+
+This script:
+- Logs in and decodes the JWT
+- Verifies `perms` array is present
+- Verifies `jti` is present
+- Tests refresh token flow
+- Displays all permissions
+
+---
+
 ## Architecture Notes
 
 - **Org isolation**: All operations are scoped to the organization from the JWT token
 - **Refresh token rotation**: One-time-use refresh tokens with reuse detection
 - **Audit logging**: All security-sensitive actions are logged
-- **RBAC**: Role-based access control (roles stored in `identity-service`, permissions checked via `role_id` in JWT)
+- **RBAC**: Role-based access control with permissions embedded in JWT tokens
 - **Bootstrap user**: Created automatically on first run if `BOOTSTRAP_EMAIL` is set
+- **Role model**: Roles are org-scoped and looked up by `(orgId, name)` combination
 
