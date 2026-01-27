@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, UnauthorizedException } from "@nestjs/common";
+import { Injectable, OnModuleInit, NotFoundException, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "crypto";
@@ -387,6 +387,60 @@ export class AuthService implements OnModuleInit {
         action: "identity.auth.logout_all",
         targetType: "user",
         targetId: userId,
+        metadata: {}
+      }
+    });
+  }
+
+  /** List active (non-revoked, non-expired) refresh tokens for user/org. Used for "Your devices" / sessions UI. */
+  async listSessions(userId: string, orgId: string) {
+    const now = new Date();
+    const tokens = await this.prisma.refreshToken.findMany({
+      where: { userId, orgId, revokedAt: null, expiresAt: { gt: now } },
+      orderBy: { lastUsedAt: "desc" },
+      select: {
+        id: true,
+        userAgent: true,
+        ipAtIssue: true,
+        lastUsedAt: true,
+        lastUsedFromIp: true,
+        createdAt: true,
+        expiresAt: true
+      }
+    });
+    return tokens.map((t) => ({
+      id: t.id,
+      user_agent: t.userAgent ?? null,
+      ip_at_issue: t.ipAtIssue ?? null,
+      last_used_at: t.lastUsedAt?.toISOString() ?? null,
+      last_used_from_ip: t.lastUsedFromIp ?? null,
+      created_at: t.createdAt.toISOString(),
+      expires_at: t.expiresAt.toISOString()
+    }));
+  }
+
+  /** Revoke a single refresh token by id. Caller must be the owner (userId/orgId from JWT). */
+  async revokeSessionById(userId: string, orgId: string, sessionId: string) {
+    const token = await this.prisma.refreshToken.findUnique({
+      where: { id: sessionId }
+    });
+    if (!token || token.userId !== userId || token.orgId !== orgId) {
+      throw new NotFoundException("Session not found");
+    }
+    if (token.revokedAt) {
+      throw new NotFoundException("Session not found");
+    }
+    await this.prisma.refreshToken.update({
+      where: { id: sessionId },
+      data: { revokedAt: new Date() }
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        orgId,
+        actorUserId: userId,
+        action: "identity.auth.session.revoked",
+        targetType: "refresh_token",
+        targetId: sessionId,
         metadata: {}
       }
     });

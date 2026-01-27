@@ -1,11 +1,15 @@
-import { Controller, Get, Req, UnauthorizedException, UseGuards } from "@nestjs/common";
+import { Controller, Delete, Get, HttpCode, Param, Req, UnauthorizedException, UseGuards } from "@nestjs/common";
 
 import { JwtAuthGuard, type RequestWithPrincipal } from "../../shared/auth/auth.guard";
+import { AuthService } from "../auth/auth.service";
 import { PrismaService } from "../storage/prisma.service";
 
 @Controller()
 export class MeController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auth: AuthService
+  ) {}
 
   @Get("me")
   @UseGuards(JwtAuthGuard)
@@ -53,6 +57,22 @@ export class MeController {
         deleted_at: org.deletedAt?.toISOString() ?? null
       }
     };
+  }
+
+  @Get("me/sessions")
+  @UseGuards(JwtAuthGuard)
+  async listSessions(@Req() req: RequestWithPrincipal) {
+    const p = req.principal!;
+    const sessions = await this.auth.listSessions(p.user_id, p.org_id);
+    return { sessions };
+  }
+
+  @Delete("me/sessions/:sessionId")
+  @HttpCode(204)
+  @UseGuards(JwtAuthGuard)
+  async revokeSession(@Req() req: RequestWithPrincipal, @Param("sessionId") sessionId: string) {
+    const p = req.principal!;
+    await this.auth.revokeSessionById(p.user_id, p.org_id, sessionId);
   }
 }
 
