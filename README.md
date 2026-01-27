@@ -540,6 +540,11 @@ List audit logs for an organization (org members only).
 - New refresh token is issued on each refresh
 - **Reuse detection**: If a refresh token is reused, all refresh tokens for that user/org are revoked
 
+### Refresh token metadata (device / IP)
+- At **issue** (login, refresh, invite accept), the service stores the request’s **User-Agent** and **client IP** on the refresh token.
+- When a refresh token is **used** (e.g. on refresh), the service records **last-used time** and **last-used IP** on that token before rotating.
+- Stored for audit and session visibility (e.g. “sessions” / “active devices” views later). Client IP is taken from `X-Forwarded-For` or `req.ip` / `socket.remoteAddress`.
+
 ### Rate Limiting
 - `/auth/login`: 5 requests per 60 seconds
 - `/auth/refresh`: 30 requests per 60 seconds

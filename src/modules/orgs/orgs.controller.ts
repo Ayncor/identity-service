@@ -1,7 +1,9 @@
 import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
 import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
+import { Request } from "express";
 
 import { JwtAuthGuard, type RequestWithPrincipal } from "../../shared/auth/auth.guard";
+import { getRequestMetadata } from "../../shared/http/request-metadata";
 import {
   AcceptInviteRequestDto,
   CreateInviteRequestDto,
@@ -135,8 +137,9 @@ export class OrgsController {
   @Post("orgs/:orgId/invites/accept")
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60 } })
-  async acceptInvite(@Param("orgId") orgId: string, @Body() body: AcceptInviteRequestDto) {
-    const session = await this.orgs.acceptInvitePublic(orgId, body.token, body.password, body.display_name);
+  async acceptInvite(@Req() req: Request, @Param("orgId") orgId: string, @Body() body: AcceptInviteRequestDto) {
+    const metadata = getRequestMetadata(req);
+    const session = await this.orgs.acceptInvitePublic(orgId, body.token, body.password, body.display_name, metadata);
     return {
       access_token: session.access_token,
       refresh_token: session.refresh_token,
