@@ -1,4 +1,4 @@
-import { IsEmail, IsIn, IsOptional, IsString, Matches, MaxLength, MinLength } from "class-validator";
+import { IsArray, IsEmail, IsIn, IsOptional, IsString, Matches, MaxLength, MinLength } from "class-validator";
 
 export class CreateOrgRequestDto {
   @IsString()
@@ -71,5 +71,29 @@ export class DeclineInviteRequestDto {
 export class VerifyInviteRequestDto {
   @IsString()
   token!: string;
+}
+
+export class CreateRoleRequestDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  name!: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  permissions!: string[];
+}
+
+export class UpdateRoleRequestDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  name?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  permissions?: string[];
 }
 

@@ -88,6 +88,83 @@ export class OrgsService {
     return org;
   }
 
+  async listRoles(orgId: string, actorOrgId: string) {
+    if (orgId !== actorOrgId) throw new ForbiddenException("Forbidden");
+    const org = await this.getOrg(orgId);
+    const roles = await this.prisma.role.findMany({
+      where: { orgId: org.id },
+      orderBy: [{ isSystem: "desc" }, { name: "asc" }]
+    });
+    return roles;
+  }
+
+  async createRole(orgId: string, actorUserId: string, actorMembershipId: string, name: string, permissions: string[]) {
+    await this.assertOrgAdmin(orgId, actorMembershipId);
+    const org = await this.getOrg(orgId);
+    const reserved = ["ORG_ADMIN", "ORG_MEMBER"];
+    if (reserved.includes(name)) throw new ConflictException("Role name is reserved");
+    const existing = await this.prisma.role.findUnique({
+      where: { orgId_name: { orgId: org.id, name } }
+    });
+    if (existing) throw new ConflictException("Role name already exists in this org");
+    const role = await this.prisma.role.create({
+      data: { orgId: org.id, name, permissions, isSystem: false }
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        orgId: org.id,
+        actorUserId,
+        action: "identity.role.created",
+        targetType: "role",
+        targetId: role.id,
+        metadata: { name, permissions }
+      }
+    });
+    return role;
+  }
+
+  async updateRole(
+    orgId: string,
+    actorUserId: string,
+    actorMembershipId: string,
+    roleId: string,
+    updates: { name?: string; permissions?: string[] }
+  ) {
+    await this.assertOrgAdmin(orgId, actorMembershipId);
+    const org = await this.getOrg(orgId);
+    const role = await this.prisma.role.findUnique({ where: { id: roleId } });
+    if (!role || role.orgId !== org.id) throw new NotFoundException("Role not found");
+    if (role.isSystem) throw new ForbiddenException("System roles cannot be updated");
+    const reserved = ["ORG_ADMIN", "ORG_MEMBER"];
+    if (updates.name !== undefined && reserved.includes(updates.name)) {
+      throw new ConflictException("Role name is reserved");
+    }
+    if (updates.name !== undefined && updates.name !== role.name) {
+      const existing = await this.prisma.role.findUnique({
+        where: { orgId_name: { orgId: org.id, name: updates.name } }
+      });
+      if (existing) throw new ConflictException("Role name already exists in this org");
+    }
+    const updated = await this.prisma.role.update({
+      where: { id: roleId },
+      data: {
+        ...(updates.name !== undefined && { name: updates.name }),
+        ...(updates.permissions !== undefined && { permissions: updates.permissions })
+      }
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        orgId: org.id,
+        actorUserId,
+        action: "identity.role.updated",
+        targetType: "role",
+        targetId: role.id,
+        metadata: { name: updated.name, permissions: updated.permissions }
+      }
+    });
+    return updated;
+  }
+
   private async assertOrgAdmin(orgId: string, actorMembershipId: string) {
     const actor = await this.prisma.membership.findUnique({
       where: { id: actorMembershipId },

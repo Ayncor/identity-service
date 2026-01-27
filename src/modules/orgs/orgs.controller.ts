@@ -7,9 +7,11 @@ import {
   CreateInviteRequestDto,
   CreateMemberRequestDto,
   CreateOrgRequestDto,
+  CreateRoleRequestDto,
   DeclineInviteRequestDto,
   RevokeInviteRequestDto,
   UpdateMemberRequestDto,
+  UpdateRoleRequestDto,
   VerifyInviteRequestDto
 } from "./orgs.dto";
 import { OrgsService } from "./orgs.service";
@@ -34,6 +36,42 @@ export class OrgsController {
   async getOrg(@Param("orgId") orgId: string) {
     const org = await this.orgs.getOrg(orgId);
     return this.toOrg(org);
+  }
+
+  @Get("orgs/:orgId/roles")
+  @UseGuards(JwtAuthGuard)
+  async listRoles(@Req() req: RequestWithPrincipal, @Param("orgId") orgId: string) {
+    const p = req.principal!;
+    const roles = await this.orgs.listRoles(orgId, p.org_id);
+    return { items: roles.map((r) => this.toRole(r)) };
+  }
+
+  @Post("orgs/:orgId/roles")
+  @UseGuards(JwtAuthGuard)
+  async createRole(
+    @Req() req: RequestWithPrincipal,
+    @Param("orgId") orgId: string,
+    @Body() body: CreateRoleRequestDto
+  ) {
+    const p = req.principal!;
+    const role = await this.orgs.createRole(orgId, p.user_id, p.membership_id, body.name, body.permissions);
+    return { role: this.toRole(role) };
+  }
+
+  @Patch("orgs/:orgId/roles/:roleId")
+  @UseGuards(JwtAuthGuard)
+  async updateRole(
+    @Req() req: RequestWithPrincipal,
+    @Param("orgId") orgId: string,
+    @Param("roleId") roleId: string,
+    @Body() body: UpdateRoleRequestDto
+  ) {
+    const p = req.principal!;
+    const role = await this.orgs.updateRole(orgId, p.user_id, p.membership_id, roleId, {
+      name: body.name,
+      permissions: body.permissions
+    });
+    return { role: this.toRole(role) };
   }
 
   @Post("orgs/:orgId/members")
@@ -151,6 +189,18 @@ export class OrgsController {
       accepted_at: i.acceptedAt ? i.acceptedAt.toISOString() : null,
       declined_at: i.declinedAt ? i.declinedAt.toISOString() : null,
       revoked_at: i.revokedAt ? i.revokedAt.toISOString() : null
+    };
+  }
+
+  private toRole(r: any) {
+    return {
+      id: r.id,
+      org_id: r.orgId,
+      name: r.name,
+      permissions: r.permissions,
+      is_system: r.isSystem,
+      created_at: r.createdAt.toISOString(),
+      updated_at: r.updatedAt.toISOString()
     };
   }
 }
