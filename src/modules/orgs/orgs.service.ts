@@ -301,7 +301,13 @@ export class OrgsService {
     };
   }
 
-  async acceptInvitePublic(orgId: string, token: string, password: string, displayName?: string) {
+  async acceptInvitePublic(
+    orgId: string,
+    token: string,
+    password: string,
+    displayName?: string,
+    metadata?: { userAgent?: string | null; ip?: string | null }
+  ) {
     const invite = await this.getInviteByToken(orgId, token);
     this.assertInviteUsable(invite);
 
@@ -380,7 +386,13 @@ export class OrgsService {
       }
     });
 
-    const session = await this.auth.issueSessionForMembership(user.id, orgId, updatedMembership.id, "identity.auth.invite.accepted");
+    const session = await this.auth.issueSessionForMembership(
+      user.id,
+      orgId,
+      updatedMembership.id,
+      "identity.auth.invite.accepted",
+      metadata
+    );
 
     return {
       access_token: session.access_token,

@@ -154,7 +154,12 @@ export class AuthService implements OnModuleInit {
     return ROLE_IDS;
   }
 
-  async login(email: string, password: string, orgSlug: string) {
+  async login(
+    email: string,
+    password: string,
+    orgSlug: string,
+    metadata?: { userAgent?: string | null; ip?: string | null }
+  ) {
     const user = await this.prisma.user.findUnique({ where: { email: email.toLowerCase() } });
     if (!user || user.status !== "ACTIVE") throw new UnauthorizedException("Invalid credentials");
 
@@ -170,7 +175,7 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException("Invalid credentials");
     }
 
-    const session = await this.issueSessionForMembership(user.id, org.id, membership.id, "identity.auth.login");
+    const session = await this.issueSessionForMembership(user.id, org.id, membership.id, "identity.auth.login", metadata);
     return { ...session, user, org, membership };
   }
 
@@ -183,7 +188,13 @@ export class AuthService implements OnModuleInit {
     return DEFAULT_ROLE_PERMISSIONS[roleId] ?? [];
   }
 
-  async issueSessionForMembership(userId: string, orgId: string, membershipId: string, auditAction?: string) {
+  async issueSessionForMembership(
+    userId: string,
+    orgId: string,
+    membershipId: string,
+    auditAction?: string,
+    metadata?: { userAgent?: string | null; ip?: string | null }
+  ) {
     const membership = await this.prisma.membership.findUnique({ where: { id: membershipId } });
     if (!membership || membership.userId !== userId || membership.orgId !== orgId) {
       throw new UnauthorizedException("Invalid session");
@@ -209,7 +220,9 @@ export class AuthService implements OnModuleInit {
         userId,
         orgId,
         membershipId,
-        expiresAt: new Date(Date.now() + ttlMs)
+        expiresAt: new Date(Date.now() + ttlMs),
+        userAgent: metadata?.userAgent ?? null,
+        ipAtIssue: metadata?.ip ?? null
       }
     });
 
@@ -229,7 +242,10 @@ export class AuthService implements OnModuleInit {
     return { access_token: accessToken, refresh_token: refreshToken };
   }
 
-  async refresh(refreshToken: string) {
+  async refresh(
+    refreshToken: string,
+    metadata?: { userAgent?: string | null; ip?: string | null }
+  ) {
     const tokenHash = this.tokenHash(refreshToken);
     const now = new Date();
 
@@ -261,10 +277,16 @@ export class AuthService implements OnModuleInit {
     const newId = randomUUID();
 
     // Rotation must be single-use. Do it transactionally to avoid double-refresh races.
+    // Record last-used metadata on the existing token, then revoke and create replacement.
     await this.prisma.$transaction(async (tx) => {
       const updateRes = await tx.refreshToken.updateMany({
         where: { id: existing.id, revokedAt: null },
-        data: { revokedAt: now, replacedById: newId }
+        data: {
+          revokedAt: now,
+          replacedById: newId,
+          lastUsedAt: now,
+          lastUsedFromIp: metadata?.ip ?? null
+        }
       });
       if (updateRes.count !== 1) {
         // Another refresh won the race; treat as reuse and fail closed.
@@ -293,7 +315,9 @@ export class AuthService implements OnModuleInit {
           userId: existing.userId,
           orgId: existing.orgId,
           membershipId: existing.membershipId,
-          expiresAt: new Date(Date.now() + ttlMs)
+          expiresAt: new Date(Date.now() + ttlMs),
+          userAgent: metadata?.userAgent ?? null,
+          ipAtIssue: metadata?.ip ?? null
         }
       });
     });

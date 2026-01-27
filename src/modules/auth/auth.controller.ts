@@ -1,6 +1,8 @@
 import { Body, Controller, HttpCode, NotImplementedException, Post, Req, UseGuards } from "@nestjs/common";
 import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
+import { Request } from "express";
 import { JwtAuthGuard, type RequestWithPrincipal } from "../../shared/auth/auth.guard";
+import { getRequestMetadata } from "../../shared/http/request-metadata";
 import { LoginRequestDto, LogoutRequestDto, PasswordResetConfirmDto, PasswordResetRequestDto, RefreshRequestDto } from "./auth.dto";
 import { AuthService } from "./auth.service";
 
@@ -11,8 +13,9 @@ export class AuthController {
   @Post("login")
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60 } })
-  async login(@Body() body: LoginRequestDto) {
-    const session = await this.auth.login(body.email, body.password, body.org_slug);
+  async login(@Req() req: Request, @Body() body: LoginRequestDto) {
+    const metadata = getRequestMetadata(req);
+    const session = await this.auth.login(body.email, body.password, body.org_slug, metadata);
     return {
       access_token: session.access_token,
       refresh_token: session.refresh_token,
@@ -25,8 +28,9 @@ export class AuthController {
   @Post("refresh")
   @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 30, ttl: 60 } })
-  async refresh(@Body() body: RefreshRequestDto) {
-    const session = await this.auth.refresh(body.refresh_token);
+  async refresh(@Req() req: Request, @Body() body: RefreshRequestDto) {
+    const metadata = getRequestMetadata(req);
+    const session = await this.auth.refresh(body.refresh_token, metadata);
     return {
       access_token: session.access_token,
       refresh_token: session.refresh_token,
