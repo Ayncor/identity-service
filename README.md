@@ -269,6 +269,35 @@ Get current user profile (from JWT token).
 }
 ```
 
+#### `GET /me/sessions`
+List active sessions (devices) for the current user in the current org. Returns non-revoked, non-expired refresh tokens with device/IP metadata. No token value is returned.
+
+**Headers:** `Authorization: Bearer <access_token>`
+
+**Response:**
+```json
+{
+  "sessions": [
+    {
+      "id": "uuid",
+      "user_agent": "Mozilla/5.0 ...",
+      "ip_at_issue": "127.0.0.1",
+      "last_used_at": "2026-01-26T12:00:00.000Z",
+      "last_used_from_ip": "127.0.0.1",
+      "created_at": "2026-01-26T12:00:00.000Z",
+      "expires_at": "2026-02-25T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+#### `DELETE /me/sessions/:sessionId`
+Revoke a single session (device) by id. Caller must own the session (user/org from JWT). Returns 204 on success, 404 if session not found or already revoked.
+
+**Headers:** `Authorization: Bearer <access_token>`
+
+**Response:** `204 No Content` on success, `404 Not Found` if session doesn’t exist or is already revoked.
+
 ---
 
 ### Organizations
@@ -543,7 +572,7 @@ List audit logs for an organization (org members only).
 ### Refresh token metadata (device / IP)
 - At **issue** (login, refresh, invite accept), the service stores the request’s **User-Agent** and **client IP** on the refresh token.
 - When a refresh token is **used** (e.g. on refresh), the service records **last-used time** and **last-used IP** on that token before rotating.
-- Stored for audit and session visibility (e.g. “sessions” / “active devices” views later). Client IP is taken from `X-Forwarded-For` or `req.ip` / `socket.remoteAddress`.
+- Stored for audit and session visibility. Use `GET /me/sessions` to list active devices and `DELETE /me/sessions/:sessionId` to revoke one. Client IP is taken from `X-Forwarded-For` or `req.ip` / `socket.remoteAddress`.
 
 ### Rate Limiting
 - `/auth/login`: 5 requests per 60 seconds
@@ -585,6 +614,9 @@ $refresh = $login.refresh_token
 
 # Get profile
 Invoke-RestMethod -Uri "http://localhost:3001/me" -Headers @{ Authorization = "Bearer $access" }
+
+# List sessions (devices)
+Invoke-RestMethod -Uri "http://localhost:3001/me/sessions" -Headers @{ Authorization = "Bearer $access" }
 
 # Refresh token
 $refreshBody = @{ refresh_token = $refresh } | ConvertTo-Json
