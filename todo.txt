@@ -19,7 +19,7 @@ DO NOW (before starting core-service)
      - POST /orgs/:orgId/invites/accept  (public invite accept)  ← @Throttle(5, 60s)
      - (Optional) POST /orgs/:orgId/invites/verify, POST /orgs/:orgId/invites/decline
    - Implementation: @nestjs/throttler in use (in-memory; Redis for multi-instance later).
-   - Return 429 with a clear error code (rate_limited) and retry-after.
+   - ✓ Return 429 (throttler default). Optional: custom body code "rate_limited" and Retry-After header.
 
 ✓ 2) Password reset placeholder endpoints (API surface reservation)  [DONE]
    - Why:
@@ -29,8 +29,8 @@ DO NOW (before starting core-service)
      - POST /auth/password-reset/request  { email, org_slug? }  ← returns 202
      - POST /auth/password-reset/confirm  { token, new_password }  ← 501 Not Implemented
    - Security notes:
-     - Never reveal whether an email exists.
-     - Add audit events for reset requests (even if not implemented).
+     - ✓ Never reveal whether an email exists (202 always for request).
+     - Add audit events for reset requests (even if not implemented).  [not done]
 
 ✓ 3) Secrets hygiene (JWT_ACCESS_SECRET)  [DONE]
    - Why:
@@ -51,7 +51,7 @@ DO LATER (after core-service is producing real workflows)
    - What:
      - Confirm the user controls the email address before enabling sensitive actions.
    - Typical flow:
-     - On signup/invite accept: create user with email_verified_at = null
+     - ✓ On signup/invite accept: create user with email_verified_at = null  (User.emailVerifiedAt exists, default null)
      - Send verification email with one-time token (short TTL)
      - POST /auth/email/verify { token } marks verified
    - Notes:
@@ -65,7 +65,7 @@ DO LATER (after core-service is producing real workflows)
      - Securely reset account password via email-based token.
    - Requirements:
      - Token must be one-time, short-lived, hashed at rest (store tokenHash in DB).
-     - Rate limit requests.
+     - ✓ Rate limit requests (password-reset/request already throttled 5/60s).
      - After password reset:
        - revoke-all refresh tokens for that user/org (force logout across devices)
        - add audit event identity.auth.password_reset.completed
@@ -106,6 +106,6 @@ DO LATER (after core-service is producing real workflows)
      - Trigger revoke-all + notify user/admin.
    - Brute-force & credential stuffing defenses:
      - IP reputation, progressive delays, CAPTCHA (last resort).
-   - Audit quality:
-     - Ensure every sensitive security event emits audit logs with stable action names.
+   - ✓ Audit quality:
+     - Ensure every sensitive security event emits audit logs with stable action names.  [done: identity.auth.*, identity.org.*, identity.invite.*, identity.membership.*, identity.role.*, identity.bootstrap.*]
 
