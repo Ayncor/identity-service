@@ -715,3 +715,6 @@ This script:
 - **Bootstrap user**: Created automatically on first run if `BOOTSTRAP_EMAIL` is set
 - **Role model**: Roles are org-scoped and looked up by `(orgId, name)` combination
 
+
+
+try making ci work
