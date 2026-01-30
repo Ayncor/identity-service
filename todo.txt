@@ -3,50 +3,43 @@ identity-service TODOs (security + enterprise hardening)
 
 This file tracks follow-up work for identity-service.
 Current status: MVP is functional (auth + refresh rotation + orgs + memberships + invites + audit + health).
+Role verification: test-roles.ps1 (Windows) and test-roles.sh (macOS/Linux) are in place for contributors to verify roles and permissions via API (no DB access).
 
 
 DO NOW (before starting core-service)
 ------------------------------------
 
-1) Rate limit high-risk endpoints
+✓ 1) Rate limit high-risk endpoints  [DONE]
    - Why:
      - Prevent brute-force password guessing and token abuse.
      - Protect infra and reduce noisy audit logs.
    - Scope (minimal):
-     - POST /auth/login
-     - POST /auth/refresh
-     - POST /orgs/:orgId/invites/accept  (public invite accept)
+     - POST /auth/login  ← @Throttle(5, 60s)
+     - POST /auth/refresh  ← @Throttle(30, 60s)
+     - POST /orgs/:orgId/invites/accept  (public invite accept)  ← @Throttle(5, 60s)
      - (Optional) POST /orgs/:orgId/invites/verify, POST /orgs/:orgId/invites/decline
-   - Suggested policy (starter):
-     - /auth/login: 5 req/min per IP + 5 req/min per email (best-effort)
-     - /auth/refresh: 30 req/min per token hash or per IP
-     - invite accept: 5 req/min per IP
-   - Implementation notes:
-     - Use NestJS throttling (e.g., @nestjs/throttler) or a reverse-proxy rate limiter.
-     - Prefer a shared store (Redis) for multi-instance deployments; in-memory is OK for local dev.
-     - Return 429 with a clear error code (rate_limited) and retry-after.
+   - Implementation: @nestjs/throttler in use (in-memory; Redis for multi-instance later).
+   - Return 429 with a clear error code (rate_limited) and retry-after.
 
-2) Password reset placeholder endpoints (API surface reservation)
+✓ 2) Password reset placeholder endpoints (API surface reservation)  [DONE]
    - Why:
      - Frontend can integrate flows early; backend can return "not implemented" until email delivery exists.
      - Avoid breaking API changes later.
    - Minimal endpoints:
-     - POST /auth/password-reset/request  { email, org_slug? }
-       - Return 202 always (to avoid user enumeration).
-     - POST /auth/password-reset/confirm  { token, new_password }
-       - Return 501 Not Implemented for now, or 400 with a specific code.
+     - POST /auth/password-reset/request  { email, org_slug? }  ← returns 202
+     - POST /auth/password-reset/confirm  { token, new_password }  ← 501 Not Implemented
    - Security notes:
      - Never reveal whether an email exists.
      - Add audit events for reset requests (even if not implemented).
 
-3) Secrets hygiene (JWT_ACCESS_SECRET)
+✓ 3) Secrets hygiene (JWT_ACCESS_SECRET)  [DONE]
    - Why:
      - JWT signing key compromise == full account compromise until rotated.
    - Requirements:
-     - Use long, random secret (>= 32 bytes / 256-bit). Base64 is fine.
-     - Do NOT commit secrets to git.
-     - Ensure .env files are ignored.
-   - Rotation-ready approach:
+     - Use long, random secret (>= 32 bytes / 256-bit). Base64 is fine.  ← enforced in auth.module (isProbablyWeakSecret)
+     - Do NOT commit secrets to git.  ← .env / .env.* in .gitignore
+     - Ensure .env files are ignored.  ← done
+   - Rotation-ready approach (later):
      - Support multiple active signing keys (kid header) later, so you can rotate without instant logout.
      - Keep a plan for rotating access signing keys and invalidating refresh tokens if needed.
 
