@@ -592,11 +592,19 @@ List audit logs for an organization (org members only).
 
 To quickly verify that roles and permissions are working correctly, run:
 
+**Windows (PowerShell):**
 ```powershell
 .\test-roles.ps1
 ```
 
-This script automatically tests login, JWT decoding, permissions, and refresh token flow. See the [Roles and Permissions](#roles-and-permissions) section for more details.
+**macOS / Linux (Bash):**
+```bash
+chmod +x test-roles.sh   # once, to make executable
+./test-roles.sh          # default: http://localhost:3001
+./test-roles.sh http://localhost:3001   # optional base URL
+```
+
+Both scripts automatically test login, JWT decoding, permissions, and refresh token flow. They require no database access (API only). See the [Roles and Permissions](#roles-and-permissions) section for more details.
 
 ### PowerShell Example
 
@@ -686,9 +694,8 @@ Permissions are included in the JWT `perms` array, allowing services (like `core
 
 Use the provided test script to verify roles and permissions:
 
-```powershell
-.\test-roles.ps1
-```
+- **Windows:** `.\test-roles.ps1`
+- **macOS / Linux:** `./test-roles.sh` (run `chmod +x test-roles.sh` once if needed)
 
 This script:
 - Logs in and decodes the JWT
