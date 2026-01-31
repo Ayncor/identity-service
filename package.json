@@ -9,7 +9,7 @@
     "start:dev": "node scripts/dev.mjs",
     "build": "nest build",
     "postbuild": "node scripts/fix-imports.mjs",
-    "test": "jest",
+    "test": "jest --passWithNoTests",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:dev": "prisma migrate dev",
