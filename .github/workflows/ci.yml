@@ -13,8 +13,6 @@ jobs:
     permissions:
       contents: read
       packages: read   # required to install @ayncor/contracts from GitHub Packages
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +21,9 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
+
+      - name: Configure npm for GitHub Packages
+        run: echo "//npm.pkg.github.com/:_authToken=${{ secrets.NPM_TOKEN }}" >> .npmrc
 
       - name: Install dependencies
         run: npm ci
