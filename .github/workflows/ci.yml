@@ -1,4 +1,5 @@
-# CI for identity-service (development, staging, main)
+# CI for identity-service (development, staging, main).
+# Deployment to Railway is triggered by push to the connected branch; use "Wait for CI" in Railway so deploys run after this workflow passes.
 name: CI
 
 on:
