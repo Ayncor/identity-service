@@ -1,0 +1,14 @@
+# Override install so we can auth to GitHub Packages before npm ci.
+# Set NPM_TOKEN in Railway Variables (GitHub PAT with read:packages).
+[phases.install]
+cmds = [
+  'echo "//npm.pkg.github.com/:_authToken=$NPM_TOKEN" >> .npmrc',
+  'npm ci'
+]
+
+# Build: generate Prisma client then Nest build.
+[phases.build]
+cmds = [
+  'npx prisma generate',
+  'npm run build'
+]
