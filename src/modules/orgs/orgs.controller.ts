@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 import { Request } from "express";
 
@@ -13,14 +13,48 @@ import {
   DeclineInviteRequestDto,
   RevokeInviteRequestDto,
   UpdateMemberRequestDto,
+  UpdateOrgSettingsRequestDto,
   UpdateRoleRequestDto,
   VerifyInviteRequestDto
 } from "./orgs.dto";
+import { SignupRequestDto } from "../auth/auth.dto";
 import { OrgsService } from "./orgs.service";
 
 @Controller()
 export class OrgsController {
   constructor(private readonly orgs: OrgsService) {}
+
+  /** Public: check if team URL (slug) is available for sign-up. */
+  @Get("orgs/availability/slug")
+  async slugAvailable(@Query("slug") slug: string) {
+    const available = await this.orgs.isSlugAvailable(slug ?? "");
+    return { available };
+  }
+
+  /** Public: sign up — create user + org, optionally invite team. Rate limited. */
+  @Post("orgs/signup")
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60 } })
+  async signup(@Req() req: Request, @Body() body: SignupRequestDto) {
+    const metadata = getRequestMetadata(req);
+    const session = await this.orgs.signup(
+      body.email,
+      body.password,
+      body.display_name,
+      body.org_name,
+      body.org_slug,
+      body.invites ?? [],
+      metadata
+    );
+    return {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      user: this.toUser(session.user),
+      membership: this.toMembership(session.membership),
+      org: this.toOrg(session.org),
+      invites_created: session.invites_created
+    };
+  }
 
   @Post("orgs")
   @UseGuards(JwtAuthGuard)
@@ -38,6 +72,27 @@ export class OrgsController {
   async getOrg(@Param("orgId") orgId: string) {
     const org = await this.orgs.getOrg(orgId);
     return this.toOrg(org);
+  }
+
+  @Get("orgs/:orgId/settings")
+  @UseGuards(JwtAuthGuard)
+  async getOrgSettings(@Req() req: RequestWithPrincipal, @Param("orgId") orgId: string) {
+    const p = req.principal!;
+    return this.orgs.getOrgSettings(orgId, p.membership_id);
+  }
+
+  @Patch("orgs/:orgId/settings")
+  @UseGuards(JwtAuthGuard)
+  async updateOrgSettings(
+    @Req() req: RequestWithPrincipal,
+    @Param("orgId") orgId: string,
+    @Body() body: UpdateOrgSettingsRequestDto
+  ) {
+    const p = req.principal!;
+    return this.orgs.updateOrgSettings(orgId, p.user_id, p.membership_id, {
+      allowed_email_domains: body.allowed_email_domains,
+      require_company_email: body.require_company_email
+    });
   }
 
   @Get("orgs/:orgId/roles")
@@ -152,6 +207,20 @@ export class OrgsController {
   @Post("orgs/:orgId/invites/decline")
   async declineInvite(@Param("orgId") orgId: string, @Body() body: DeclineInviteRequestDto) {
     await this.orgs.declineInvitePublic(orgId, body.token);
+  }
+
+  private toUser(u: any) {
+    return {
+      id: u.id,
+      email: u.email,
+      display_name: u.displayName ?? u.display_name,
+      avatar_url: (u.avatarUrl ?? u.avatar_url) ?? null,
+      status: u.status,
+      email_verified_at: u.emailVerifiedAt ? u.emailVerifiedAt.toISOString() : u.email_verified_at ?? null,
+      created_at: u.createdAt ? u.createdAt.toISOString() : u.created_at,
+      updated_at: u.updatedAt ? u.updatedAt.toISOString() : u.updated_at,
+      deleted_at: u.deletedAt ? u.deletedAt.toISOString() : u.deleted_at ?? null
+    };
   }
 
   private toOrg(o: any) {
