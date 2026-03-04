@@ -134,6 +134,48 @@ All operations are **org-scoped** — users can only access resources within the
 
 ### Authentication
 
+#### `POST /orgs/signup`
+Sign up — create user + org in one step. Optional: invite team members. Returns access + refresh tokens (same shape as login).
+
+**Rate limited:** 5 requests per 60 seconds.
+
+**Request:**
+```json
+{
+  "email": "user@company.com",
+  "password": "min 8 chars",
+  "display_name": "John Doe",
+  "org_name": "Acme Inc",
+  "org_slug": "acme",
+  "invites": [
+    { "email": "teammate@company.com", "role_id": null }
+  ]
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `email` | ✓ | Must be unique |
+| `password` | ✓ | Min 8 chars |
+| `display_name` | ✓ | Username (1–120 chars) |
+| `org_name` | ✓ | Team name (3–120 chars) |
+| `org_slug` | ✓ | Team URL subdomain: `{org_slug}.ayncor.com`. Pattern: `^[a-z0-9-]+$`, 3–60 chars |
+| `invites` | Optional | Array of `{ email, role_id? }`. Can be empty or omitted |
+
+**Response:** Same as `/auth/login` (access_token, refresh_token, user, membership, org). Optionally includes `invites_created` with invite tokens.
+
+**Validation:** `org_slug` must be unique; reserved slugs (www, app, api, admin, etc.) are rejected.
+
+#### `GET /orgs/availability/slug?slug=acme`
+Check if team URL (slug) is available for sign-up. Public, no auth.
+
+**Response:**
+```json
+{
+  "available": true
+}
+```
+
 #### `POST /auth/login`
 Login with email, password, and org slug. Returns access + refresh tokens.
 
@@ -346,6 +388,32 @@ Get organization details.
   "name": "My Organization",
   "slug": "my-org",
   "status": "ACTIVE"
+}
+```
+
+#### `GET /orgs/:orgId/settings`
+Get org settings (org admin only). Returns `allowed_email_domains` and `require_company_email`.
+
+**Headers:** `Authorization: Bearer <access_token>`
+
+**Response:**
+```json
+{
+  "allowed_email_domains": ["company.com"],
+  "require_company_email": true
+}
+```
+
+#### `PATCH /orgs/:orgId/settings`
+Update org settings (org admin only). When `allowed_email_domains` is set, only those domains can be invited/added.
+
+**Headers:** `Authorization: Bearer <access_token>`
+
+**Request:**
+```json
+{
+  "allowed_email_domains": ["company.com", "acme.co"],
+  "require_company_email": true
 }
 ```
 

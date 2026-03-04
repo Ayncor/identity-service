@@ -97,3 +97,13 @@ export class UpdateRoleRequestDto {
   permissions?: string[];
 }
 
+export class UpdateOrgSettingsRequestDto {
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  allowed_email_domains?: string[];
+
+  @IsOptional()
+  require_company_email?: boolean;
+}
+
