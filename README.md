@@ -67,6 +67,12 @@ Server runs on **port 3001** by default.
 
 ---
 
+## API Documentation
+
+**Postman collection:** `authAPI.postman_collection.json` — import into Postman for all endpoints (Health, Auth, Signup, Me, Organizations, Roles, Members, Invites, Audit). Set `baseUrl` to `http://localhost:3001` for local dev. Canonical spec: `contracts/v1/openapi/identity-service.openapi.yaml`.
+
+---
+
 ## API Endpoints
 
 ### Health
