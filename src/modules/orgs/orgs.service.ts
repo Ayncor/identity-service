@@ -1,9 +1,14 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "crypto";
 
 import { PrismaService } from "../storage/prisma.service";
 import { AuthService } from "../auth/auth.service";
 import { ROLE_IDS } from "../storage/storage.types";
+
+const RESERVED_SLUGS = new Set([
+  "www", "app", "api", "admin", "mail", "ftp", "staging", "dev", "test",
+  "identity", "core", "realtime", "auth", "signup", "login", "invite"
+]);
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -20,6 +25,11 @@ function verifyPassword(password: string, salt: string, expectedHashHex: string)
   return timingSafeEqual(actual, expected);
 }
 
+function extractEmailDomain(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at >= 0 ? email.slice(at + 1).toLowerCase() : "";
+}
+
 @Injectable()
 export class OrgsService {
   constructor(
@@ -27,9 +37,109 @@ export class OrgsService {
     private readonly auth: AuthService
   ) {}
 
+  /** Public: check if org slug is available for sign-up. */
+  async isSlugAvailable(slug: string): Promise<boolean> {
+    const normalized = slug.trim().toLowerCase();
+    if (RESERVED_SLUGS.has(normalized)) return false;
+    const existing = await this.prisma.organization.findUnique({ where: { slug: normalized } });
+    return !existing;
+  }
+
+  private assertSlugValid(slug: string) {
+    const normalized = slug.trim().toLowerCase();
+    if (RESERVED_SLUGS.has(normalized)) {
+      throw new BadRequestException("This team URL is reserved");
+    }
+  }
+
+  private assertEmailDomainAllowed(org: { allowedEmailDomains: string[] }, email: string) {
+    const domains = org.allowedEmailDomains ?? [];
+    if (domains.length === 0) return;
+    const domain = extractEmailDomain(email);
+    if (!domain || !domains.includes(domain)) {
+      throw new BadRequestException("Only company email addresses are allowed for this organization");
+    }
+  }
+
+  async signup(
+    email: string,
+    password: string,
+    displayName: string,
+    orgName: string,
+    orgSlug: string,
+    invites: Array<{ email: string; role_id?: string | null }>,
+    metadata?: { userAgent?: string | null; ip?: string | null }
+  ) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedSlug = orgSlug.trim().toLowerCase();
+
+    this.assertSlugValid(normalizedSlug);
+
+    const existingUser = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existingUser) throw new ConflictException("Email already registered");
+
+    const existingOrg = await this.prisma.organization.findUnique({ where: { slug: normalizedSlug } });
+    if (existingOrg) throw new ConflictException("Team URL already taken");
+
+    const salt = randomBytes(16).toString("hex");
+    const user = await this.prisma.user.create({
+      data: {
+        email: normalizedEmail,
+        displayName: (displayName ?? normalizedEmail.split("@")[0] ?? "user").trim().slice(0, 120),
+        passwordHash: hashPassword(password, salt),
+        passwordSalt: salt,
+        status: "ACTIVE"
+      }
+    });
+
+    const { org, membership } = await this.createOrg(user.id, orgName, normalizedSlug);
+
+    const inviteList = invites ?? [];
+    const createdInvites: Array<{ email: string; token: string }> = [];
+    for (const inv of inviteList) {
+      if (!inv.email?.trim()) continue;
+      const invEmail = inv.email.trim().toLowerCase();
+      if (invEmail === normalizedEmail) continue; // skip self
+      try {
+        const created = await this.createInvite(org.id, user.id, membership.id, invEmail, inv.role_id ?? null);
+        createdInvites.push({ email: invEmail, token: created.token });
+      } catch {
+        // Skip duplicate or invalid invites during signup
+      }
+    }
+
+    const session = await this.auth.issueSessionForMembership(
+      user.id,
+      org.id,
+      membership.id,
+      "identity.auth.signup",
+      metadata
+    );
+
+    await this.prisma.auditLog.create({
+      data: {
+        orgId: org.id,
+        actorUserId: user.id,
+        action: "identity.auth.signup",
+        targetType: "user",
+        targetId: user.id,
+        metadata: { org_slug: normalizedSlug, invite_count: createdInvites.length }
+      }
+    });
+
+    return {
+      ...session,
+      user,
+      org,
+      membership,
+      invites_created: createdInvites
+    };
+  }
+
   async createOrg(actorUserId: string, name: string, slug: string) {
     const existing = await this.prisma.organization.findUnique({ where: { slug } });
     if (existing) throw new ConflictException("Org slug already exists");
+    this.assertSlugValid(slug);
 
     const org = await this.prisma.organization.create({ data: { name, slug } });
 
@@ -86,6 +196,53 @@ export class OrgsService {
     const org = await this.prisma.organization.findUnique({ where: { id: orgId } });
     if (!org) throw new NotFoundException("Org not found");
     return org;
+  }
+
+  async getOrgSettings(orgId: string, actorMembershipId: string) {
+    await this.assertOrgAdmin(orgId, actorMembershipId);
+    const org = await this.getOrg(orgId);
+    return {
+      allowed_email_domains: org.allowedEmailDomains ?? [],
+      require_company_email: (org.allowedEmailDomains ?? []).length > 0
+    };
+  }
+
+  async updateOrgSettings(
+    orgId: string,
+    actorUserId: string,
+    actorMembershipId: string,
+    updates: { allowed_email_domains?: string[]; require_company_email?: boolean }
+  ) {
+    await this.assertOrgAdmin(orgId, actorMembershipId);
+    const org = await this.getOrg(orgId);
+
+    let domains: string[] = org.allowedEmailDomains ?? [];
+    if (updates.allowed_email_domains !== undefined) {
+      domains = updates.allowed_email_domains.map((d) => d.trim().toLowerCase()).filter(Boolean);
+    } else if (updates.require_company_email === false) {
+      domains = [];
+    }
+
+    const updated = await this.prisma.organization.update({
+      where: { id: orgId },
+      data: { allowedEmailDomains: domains }
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        orgId,
+        actorUserId,
+        action: "identity.org.settings.updated",
+        targetType: "org",
+        targetId: orgId,
+        metadata: { allowed_email_domains: domains }
+      }
+    });
+
+    return {
+      allowed_email_domains: updated.allowedEmailDomains ?? [],
+      require_company_email: (updated.allowedEmailDomains ?? []).length > 0
+    };
   }
 
   async listRoles(orgId: string, actorOrgId: string) {
@@ -193,6 +350,7 @@ export class OrgsService {
   async createInvite(orgId: string, actorUserId: string, actorMembershipId: string, email: string, roleId?: string | null) {
     await this.assertOrgAdmin(orgId, actorMembershipId);
     const org = await this.getOrg(orgId);
+    this.assertEmailDomainAllowed(org, email);
 
     const normalizedEmail = email.toLowerCase();
 
@@ -424,6 +582,7 @@ export class OrgsService {
   async createMember(orgId: string, actorUserId: string, actorMembershipId: string, email: string, roleId?: string | null) {
     await this.assertOrgAdmin(orgId, actorMembershipId);
     const org = await this.getOrg(orgId);
+    this.assertEmailDomainAllowed(org, email);
 
     const normalizedEmail = email.toLowerCase();
     let user = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
