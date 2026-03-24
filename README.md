@@ -612,8 +612,8 @@ List audit logs for an organization (org members only).
 **Headers:** `Authorization: Bearer <access_token>`
 
 **Query params:**
-- `page_size` (default: 50, max: 100)
-- `before_id` (pagination cursor)
+- `page_size` (default: 50, max: 200)
+- `cursor` (pagination cursor)
 
 **Response:**
 ```json
@@ -626,11 +626,11 @@ List audit logs for an organization (org members only).
       "action": "identity.auth.login",
       "target_type": "user",
       "target_id": "uuid",
-      "metadata": {},
+      "metadata_json": {},
       "created_at": "2026-01-26T12:00:00.000Z"
     }
   ],
-  "next_before_id": "uuid"
+  "next_cursor": "uuid"
 }
 ```
 
