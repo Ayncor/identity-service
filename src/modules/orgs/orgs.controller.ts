@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 import { Request } from "express";
 
@@ -177,6 +177,7 @@ export class OrgsController {
 
   @Post("orgs/:orgId/invites/revoke")
   @UseGuards(JwtAuthGuard)
+  @HttpCode(204)
   async revokeInvite(@Req() req: RequestWithPrincipal, @Param("orgId") orgId: string, @Body() body: RevokeInviteRequestDto) {
     const p = req.principal!;
     await this.orgs.revokeInvite(orgId, p.user_id, p.membership_id, body.invite_id);
@@ -198,13 +199,14 @@ export class OrgsController {
     return {
       access_token: session.access_token,
       refresh_token: session.refresh_token,
-      user: session.user,
+      user: this.toUser(session.user),
       membership: this.toMembership(session.membership),
-      org: session.org
+      org: this.toOrg(session.org)
     };
   }
 
   @Post("orgs/:orgId/invites/decline")
+  @HttpCode(204)
   async declineInvite(@Param("orgId") orgId: string, @Body() body: DeclineInviteRequestDto) {
     await this.orgs.declineInvitePublic(orgId, body.token);
   }
