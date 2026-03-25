@@ -39,6 +39,14 @@ TECH STACK (FIXED)
 Do NOT suggest changing frameworks, ORMs, or auth models.
 
 ────────────────────────────────────────
+LOGGING (REQUIRED)
+────────────────────────────────────────
+
+- Do not use `console.*` in application code. Use `identity-service/src/shared/logger/logger.ts` (`logger`).
+- `logger.debug(...)` must remain gated (only when `DEBUG` is set).
+- Never log tokens, passwords, OTPs, refresh tokens, or sensitive JWT claims.
+
+────────────────────────────────────────
 CONTRACTS RULES (CRITICAL)
 ────────────────────────────────────────
 
