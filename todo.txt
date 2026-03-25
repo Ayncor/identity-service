@@ -2,110 +2,36 @@ identity-service TODOs (security + enterprise hardening)
 =======================================================
 
 This file tracks follow-up work for identity-service.
-Current status: MVP is functional (auth + refresh rotation + orgs + memberships + invites + audit + health).
+Current status: MVP is functional (auth + refresh rotation + orgs + memberships + invites + RBAC + audit + health + signup).
 Role verification: test-roles.ps1 (Windows) and test-roles.sh (macOS/Linux) are in place for contributors to verify roles and permissions via API (no DB access).
 
+OPEN ITEMS
+----------
 
-DO NOW (before starting core-service)
-------------------------------------
+1) Password reset placeholder: add audit event on request
+   - Current behavior: `POST /auth/password-reset/request` returns 202 always (correct), but does not emit an audit log.
+   - Add: `identity.auth.password_reset.requested` audit event with non-sensitive metadata (e.g. org_slug if provided; never store raw email).
 
-✓ 1) Rate limit high-risk endpoints  [DONE]
-   - Why:
-     - Prevent brute-force password guessing and token abuse.
-     - Protect infra and reduce noisy audit logs.
-   - Scope (minimal):
-     - POST /auth/login  ← @Throttle(5, 60s)
-     - POST /auth/refresh  ← @Throttle(30, 60s)
-     - POST /orgs/:orgId/invites/accept  (public invite accept)  ← @Throttle(5, 60s)
-     - (Optional) POST /orgs/:orgId/invites/verify, POST /orgs/:orgId/invites/decline
-   - Implementation: @nestjs/throttler in use (in-memory; Redis for multi-instance later).
-   - ✓ Return 429 (throttler default). Optional: custom body code "rate_limited" and Retry-After header.
+2) Email verification (future)
+   - Send verification email with one-time token (short TTL; hashed at rest).
+   - Endpoint: `POST /auth/email/verify { token }`.
+   - Audit events:
+     - `identity.email.verify.requested`
+     - `identity.email.verified`
 
-✓ 2) Password reset placeholder endpoints (API surface reservation)  [DONE]
-   - Why:
-     - Frontend can integrate flows early; backend can return "not implemented" until email delivery exists.
-     - Avoid breaking API changes later.
-   - Minimal endpoints:
-     - POST /auth/password-reset/request  { email, org_slug? }  ← returns 202
-     - POST /auth/password-reset/confirm  { token, new_password }  ← 501 Not Implemented
-   - Security notes:
-     - ✓ Never reveal whether an email exists (202 always for request).
-     - Add audit events for reset requests (even if not implemented).  [not done]
+3) Password reset flow (with email delivery)
+   - One-time, short-lived tokens; hashed at rest.
+   - On completion: revoke-all refresh tokens for that user/org + audit `identity.auth.password_reset.completed`.
 
-✓ 3) Secrets hygiene (JWT_ACCESS_SECRET)  [DONE]
-   - Why:
-     - JWT signing key compromise == full account compromise until rotated.
-   - Requirements:
-     - Use long, random secret (>= 32 bytes / 256-bit). Base64 is fine.  ← enforced in auth.module (isProbablyWeakSecret)
-     - Do NOT commit secrets to git.  ← .env / .env.* in .gitignore
-     - Ensure .env files are ignored.  ← done
-   - Rotation-ready approach (later):
-     - Support multiple active signing keys (kid header) later, so you can rotate without instant logout.
-     - Keep a plan for rotating access signing keys and invalidating refresh tokens if needed.
+4) MFA (Multi-Factor Authentication)
+   - Phase 1: TOTP enrollment + challenge for high-privilege roles.
+   - Phase 2: WebAuthn (passkeys/security keys).
+   - Recovery codes required.
 
+5) SSO (SAML / OIDC)
+   - OIDC first, then SAML.
+   - Strict org isolation; map identities by verified email + org rules.
 
-DO LATER (after core-service is producing real workflows)
---------------------------------------------------------
-
-1) Email verification
-   - What:
-     - Confirm the user controls the email address before enabling sensitive actions.
-   - Typical flow:
-     - ✓ On signup/invite accept: create user with email_verified_at = null  (User.emailVerifiedAt exists, default null)
-     - Send verification email with one-time token (short TTL)
-     - POST /auth/email/verify { token } marks verified
-   - Notes:
-     - Many products allow login before verification but restrict actions (e.g., invites, admin ops).
-     - Add audit events:
-       - identity.email.verify.requested
-       - identity.email.verified
-
-2) Password reset flow (with email delivery)
-   - What:
-     - Securely reset account password via email-based token.
-   - Requirements:
-     - Token must be one-time, short-lived, hashed at rest (store tokenHash in DB).
-     - ✓ Rate limit requests (password-reset/request already throttled 5/60s).
-     - After password reset:
-       - revoke-all refresh tokens for that user/org (force logout across devices)
-       - add audit event identity.auth.password_reset.completed
-   - Optional enhancements:
-     - Notify user on password change.
-     - Add "recently changed password" throttling.
-
-3) MFA (Multi-Factor Authentication)
-   - What:
-     - Add a second factor: TOTP (Authenticator apps) first; WebAuthn later.
-   - Suggested phases:
-     - Phase 1: TOTP enrollment + challenge on login for high-privilege roles.
-     - Phase 2: WebAuthn (passkeys/security keys).
-   - Data model:
-     - mfa_methods table (type, secret/encrypted material, created_at, last_used_at)
-   - UX notes:
-     - Recovery codes (one-time) are critical.
-     - Admin enforcement per org is common (require MFA for org admins).
-
-4) SSO (SAML / OIDC)
-   - What:
-     - Enterprise login via identity provider (Okta, Azure AD, Google Workspace).
-   - Approach:
-     - OIDC first (simpler), then SAML for larger enterprises.
-     - Map IdP identities to existing users by verified email + org domain rules.
-   - Data model:
-     - org_sso_settings (provider, metadata, domains, enforced)
-     - external_identities (user_id, provider, subject, org_id)
-   - Security:
-     - Enforce strict org isolation (no cross-org SSO confusion).
-
-5) Advanced security
-   - Device binding / session management:
-     - Store device fingerprint metadata for refresh tokens (optional, privacy-sensitive).
-     - Allow user to view active sessions and revoke individual sessions.
-   - Anomaly detection:
-     - Detect impossible travel, unusual IPs, high refresh reuse signals.
-     - Trigger revoke-all + notify user/admin.
-   - Brute-force & credential stuffing defenses:
-     - IP reputation, progressive delays, CAPTCHA (last resort).
-   - ✓ Audit quality:
-     - Ensure every sensitive security event emits audit logs with stable action names.  [done: identity.auth.*, identity.org.*, identity.invite.*, identity.membership.*, identity.role.*, identity.bootstrap.*]
+6) Signing key rotation (future)
+   - Support multiple active signing keys (`kid`) to rotate without instant logout.
 
